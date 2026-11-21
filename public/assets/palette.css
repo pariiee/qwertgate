@@ -2485,9 +2485,6 @@ body.page-saldo #ledger-kosong{padding:20px 22px}
    skrol halaman, .layout, dan permukaan topbar/stat/panel.
    ══════════════════════════════════════════════════════════════════════ */
 body.page-bot-stats{--inner-bg:rgba(255,255,255,.5);--th-bg:#eaeefa}
-@media (prefers-color-scheme:dark){
-  html:not(.dark):not([data-theme]) body.page-bot-stats{--inner-bg:rgba(0,0,0,.22);--th-bg:#15171f}
-}
 html.dark body.page-bot-stats,:root[data-theme="dark"] body.page-bot-stats{--inner-bg:rgba(0,0,0,.22);--th-bg:#15171f}
 
 /* halaman boleh diskrol. page.css mengunci tinggi body lewat
@@ -2548,7 +2545,8 @@ body.page-bot-stats .tbl{width:100% !important;border-collapse:collapse !importa
 body.page-bot-stats .tbl th{position:sticky !important;top:0 !important;z-index:2 !important;padding:12px 16px !important;background:var(--th-bg) !important;border-bottom:1px solid var(--edge) !important;font-size:13px !important;font-weight:600 !important;letter-spacing:0 !important;text-transform:none !important;color:var(--mute) !important;white-space:nowrap !important}
 body.page-bot-stats .tbl td{padding:12px 16px !important;border-bottom:1px solid var(--line) !important;color:var(--ink) !important;vertical-align:middle !important;font-size:13px !important}
 body.page-bot-stats .tbl tr:last-child td{border-bottom:0 !important}
-body.page-bot-stats .tbl tbody tr:hover{background:var(--card) !important}
+body.page-bot-stats .tbl tbody tr{background:var(--card) !important}
+body.page-bot-stats .tbl tbody tr:hover{background:var(--surf1) !important}
 body.page-bot-stats .tbl code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace !important;font-size:12.5px !important;font-weight:600 !important;padding:3px 8px !important;border-radius:8px !important;background:var(--panel) !important;border:1px solid var(--edge) !important;color:var(--accent) !important}
 body.page-bot-stats .muted{color:var(--mute) !important}
 
