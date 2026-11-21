@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE_NAME = 'qwertygate-pwa-v168';
+const CACHE_NAME = 'qwertygate-pwa-v169';
 const PRECACHE_ASSETS = [
   '/offline.html',
   '/assets/offline.js',
@@ -10,7 +10,7 @@ const PRECACHE_ASSETS = [
   '/assets/parigate.svg',
   '/assets/theme.css',
   '/assets/page.css',
-  '/assets/palette.css',
+  '/assets/palette.css?v=5.8',
 ];
 
 self.addEventListener('install', (event) => {
