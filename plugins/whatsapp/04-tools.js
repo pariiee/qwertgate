@@ -4971,18 +4971,35 @@ ${rapikanError(e)}`);
         // duluan padahal BE masih lanjut dan sering berhasil. Terukur (2026-09-28):
         // foto normal 1,7–2,2 dtk, tapi jalur utama bisa nyangkut ke 9 dtk sebelum
         // pindah ke cadangan → link yang SAH kebaca "gagal" di member.
-        // Sekarang: beri BE kesempatan menyelesaikan 9 dtk-nya, sisakan jeda buat
-        // kirim media (video diunduh di bawah dengan timeout 90 dtk sendiri).
-        // satu angka sinkron dgn TIMEOUT BE — kalau BE diubah, samakan.
+        // Sekarang: batasi 8 dtk. Sejak TikTok di BE rusak (2026-11-25) endpoint itu
+        // SELALU gagal untuk TikTok dan baru menyerah di detik ~16 — menunggu selama
+        // itu cuma bikin member nunggu. Lewat 8 dtk kita lompat ke cadangan (~2 dtk).
+        // Jangan dikembalikan ke 20 dtk selama BE belum benar.
         // validateStatus: BE membalas kegagalannya dengan HTTP 500 (bukan 200).
         // Tanpa ini axios melempar lebih dulu dan blok cadangan di bawah tak pernah
         // jalan — member cuma lihat pesan error BE walau link-nya sehat.
-        const { data } = await axios.get(`${process.env.BASE_API}api/download/tiktok`, {
-          params: { url },
-          headers: { 'X-API-Key': process.env.KEY_API },
-          timeout: 20000,
-          validateStatus: () => true,
+        // TikTok di BE sedang RUSAK: selalu gagal dan baru menyerah di detik ~16.
+        // Jadi sumber BE dibatasi 3 dtk sementara cadangan (SSR VPS + aio) sudah
+        // dijalankan BARENGAN dari detik 0 dan biasanya siap ~2 dtk — begitu BE kalah
+        // cepat, hasil cadangan sudah menunggu. Yang penting: jangan pernah menunggu
+        // BE lebih lama dari itu selama TikTok di BE belum benar.
+        const cadanganPromise = ambilTikTokCadangan(url).catch((e) => {
+          console.warn(`[tt] cadangan gagal: ${e.message}`);
+          return null;
         });
+        let data = null;
+        try {
+          ({ data } = await axios.get(`${process.env.BASE_API}api/download/tiktok`, {
+            params: { url },
+            headers: { 'X-API-Key': process.env.KEY_API },
+            timeout: 3000,
+            // validateStatus: kegagalan BE datang sebagai HTTP 500, bukan 200.
+            // Tanpa ini axios melempar dan blok cadangan di bawah tak pernah jalan.
+            validateStatus: () => true,
+          }));
+        } catch (e) {
+          console.warn(`[tt] BE tiktok tidak menjawab wajar (${e.message})`);
+        }
         let   res     = data?.results || {};
         // BE udah ngasih alasan yang manusiawi ("linknya udah nggak ada", "ini post
         // foto, bukan video"). Dulu alasan itu dibuang dan diganti kalimat generik,
@@ -4994,15 +5011,11 @@ ${rapikanError(e)}`);
         // api-data"). Cadangan: metadata dari SSR yang diambil VPS ini sendiri +
         // media lewat backend aio, karena CDN TikTok membalas 403 ke IP VPS ini.
         if (!data?.success || !adaMediaTikTok(res)) {
-          try {
-            const cadangan = await ambilTikTokCadangan(url);
-            if (cadangan) {
-              console.log(`[tt] pakai cadangan: ${cadangan.sumber}`);
-              res = cadangan.res;
-              alasanBe = '';
-            }
-          } catch (e) {
-            console.warn(`[tt] cadangan gagal: ${e.message}`);
+          const cadangan = await cadanganPromise;
+          if (cadangan) {
+            console.log(`[tt] pakai cadangan: ${cadangan.sumber}`);
+            res = cadangan.res;
+            alasanBe = '';
           }
         }
         const title   = res.title  || res.description || '';
