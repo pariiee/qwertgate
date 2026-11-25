@@ -434,12 +434,33 @@ async function kirimAudioSticker(ctx, sumberGambar, sumberAudio) {
     },
   };
 
-  // stickerMessage paling depan supaya getContentType() melaporkan stickerMessage,
-  // bukan messageContextInfo.
-  await client.message.send(jid, {
-    stickerMessage,
-    messageContextInfo: { messageSecret: randomBytes(32) },
-  });
+  // Sound sticker WA asli dibungkus, bukan stickerMessage polos:
+  //   Message.audioStickerMessage (field 134)
+  //     > FutureProofMessage.message (field 1)
+  //       > Message.stickerMessage (field 26)
+  // Kalau stikernya dikirim polos di level atas, klien tetap menampilkan
+  // stikernya tapi audionya dijawab "Couldn't play sticker sound" — jadi
+  // wadah ini yang bikin suaranya mau diputar (sumber: riset lapangan
+  // sound sticker, Nov 2026).
+  const messageSecret = randomBytes(32);
+  const bytes = Buffer.from(proto.Message.encode({
+    messageContextInfo: { messageSecret },
+    audioStickerMessage: { message: { stickerMessage } },
+  }).finish());
+
+  if (String(jid).endsWith('@g.us')) {
+    // Di grup kita kirim mentah supaya `mediatype: 'sticker'` ikut terkirim:
+    // zapo menyimpulkan mediatype dari isi pesan, dan wadah `audioStickerMessage`
+    // belum dikenali di tabelnya.
+    await client.message.kirimPesanGrupMentah(jid, bytes, { mediatype: 'sticker' });
+  } else {
+    // DM: jalur mentah belum ada (enkripsi Signal per perangkat), jadi pakai
+    // kiriman biasa. Wadahnya sudah benar, hanya atribut mediatype yang lewat.
+    await client.message.send(jid, {
+      audioStickerMessage: { message: { stickerMessage } },
+      messageContextInfo: { messageSecret },
+    });
+  }
 
   return { size: opus.buf.length, seconds: opus.seconds ?? null };
 }

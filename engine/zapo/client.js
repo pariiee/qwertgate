@@ -114,7 +114,7 @@ const PROTO_KEYS = [
   'audioMessage', 'documentMessage', 'stickerMessage', 'interactiveMessage',
   'buttonsMessage', 'templateMessage', 'listMessage', 'reactionMessage',
   'protocolMessage', 'eventMessage', 'pollCreationMessageV3',
-  'groupStatusMessageV2', 'albumMessage', 'productMessage',
+  'groupStatusMessageV2', 'albumMessage', 'productMessage', 'audioStickerMessage',
 ];
 
 const isRawProto = (c) => !!c && typeof c === 'object' && !Buffer.isBuffer(c) && PROTO_KEYS.some((k) => c[k] !== undefined);
