@@ -115,6 +115,61 @@ function runYtDlp(argv, timeoutMs = 180000) {
 // In-flight deduplication: anti-stampede jika ratusan request unduh lagu sama bersamaan
 const inflightAudioDownloads = new Map();
 
+// ─── Bantu .rvo: baca media dari quote / pesan aslinya ───────────────────────
+const TIPE_MEDIA_RVO = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'];
+const BUNGKUS_MEDIA = ['viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension',
+  'ephemeralMessage', 'documentWithCaptionMessage'];
+
+/** Buka bungkus view-once/ephemeral berlapis pada konten pesan. */
+function bukaBungkus(c) {
+  let isi = c;
+  for (let i = 0; i < 5 && isi; i++) {
+    const k = Object.keys(isi).find((x) => BUNGKUS_MEDIA.includes(x));
+    if (!k || !isi[k]?.message) break;
+    isi = isi[k].message;
+  }
+  return isi;
+}
+
+/** contextInfo dari tipe node apa pun (perintah bisa diketik sebagai teks/gambar/...). */
+function contextInfoPesan(m) {
+  return m?.extendedTextMessage?.contextInfo
+    || m?.imageMessage?.contextInfo
+    || m?.videoMessage?.contextInfo
+    || m?.audioMessage?.contextInfo
+    || m?.documentMessage?.contextInfo
+    || null;
+}
+
+/**
+ * Field biner dari WA kadang bukan Uint8Array: string base64, `{ type:'Buffer',
+ * data:[...] }`, atau objek bernomor `{ 0:12, 1:34 }`. zapo menolak semuanya
+ * ("message has no downloadable media"), jadi diseragamkan jadi Buffer dulu.
+ */
+function keBufferPesan(v) {
+  if (!v) return null;
+  if (Buffer.isBuffer(v)) return v;
+  if (v instanceof Uint8Array) return Buffer.from(v);
+  if (typeof v === 'string') {
+    const b = Buffer.from(v, 'base64');
+    return b.length ? b : null;
+  }
+  if (Array.isArray(v)) return v.length ? Buffer.from(v) : null;
+  if (typeof v === 'object') {
+    if (Array.isArray(v.data)) return Buffer.from(v.data);
+    const angka = Object.keys(v).filter((k) => /^\d+$/.test(k)).sort((a, b) => a - b);
+    if (angka.length) return Buffer.from(angka.map((k) => v[k] & 0xff));
+  }
+  return null;
+}
+
+/** Media siap diunduh? Butuh directPath + mediaKey yang bisa jadi Uint8Array. */
+function siapUnduh(node) {
+  if (!node?.directPath) return false;
+  const mk = keBufferPesan(node.mediaKey);
+  return Boolean(mk && mk.length);
+}
+
 module.exports = async function toolsHandler(ctx) {
   if (!ctx.isCmd) return false;
 
@@ -3610,34 +3665,69 @@ ${rapikanError(e)}`);
     case 'rvo':
     case 'readviewonce':
     case 'readvo': {
-      // Harus reply ke pesan view once
-      const quoted = ctx.msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+      // Perintah ini bisa diketik sebagai teks/gambar/video — ambil contextInfo-nya
+      // dari tipe node mana pun, jangan cuma extendedTextMessage.
+      const ci = contextInfoPesan(ctx.msg?.message);
+      const quoted = ci?.quotedMessage;
       if (!quoted) {
         await reply(`Penggunaan: Reply pesan view once lalu ketik *${p}rvo*`);
         return true;
       }
 
-      // Cari tipe media di quoted message
-      const mediaTypes = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'];
-      const mediaType  = mediaTypes.find(t => quoted[t]);
-      if (!mediaType) {
+      // Buka bungkus view-once/ephemeral dulu: salinan di quote sering masih
+      // terbungkus, jadi media-nya tidak ketemu.
+      let isi = bukaBungkus(quoted);
+      let mediaType = TIPE_MEDIA_RVO.find((t) => isi[t]);
+      let mediaMsg  = mediaType ? isi[mediaType] : null;
+
+      // Salinan di quote juga sering TIDAK lengkap: WhatsApp membuang
+      // mediaKey/directPath pesan sekali-lihat, dan zapo menolaknya dengan
+      // "message has no downloadable media" walau pesannya jelas ada di chat.
+      // Ambil pesan ASLINYA dari cache engine lewat stanzaId.
+      let sumber = 'quote';
+      if (!siapUnduh(mediaMsg)) {
+        const asli = ctx.sock?.message?.lookupQuote?.(ci?.remoteJid || ctx.jid, ci?.stanzaId);
+        if (asli) {
+          const isiAsli = bukaBungkus(asli);
+          const t = TIPE_MEDIA_RVO.find((x) => isiAsli[x]);
+          if (t && siapUnduh(isiAsli[t])) {
+            mediaType = t; mediaMsg = isiAsli[t]; sumber = 'cache';
+          }
+        }
+      }
+
+      if (!mediaType || !mediaMsg) {
         await reply('❌ Pesan yang di-reply bukan media (gambar/video/audio)!');
         return true;
       }
 
-      const mediaMsg = quoted[mediaType];
-
-      // Pastikan ini memang view once
-      const isViewOnce = mediaMsg?.viewOnce === true
-        || ctx.msg?.message?.viewOnceMessage
-        || ctx.msg?.message?.viewOnceMessageV2
-        || ctx.msg?.message?.viewOnceMessageV2Extension;
+      // Masih belum punya jalur unduh? Minta pengirim unggah ulang (blob bisa
+      // kedaluwarsa, atau media sekali lihat sudah dibersihkan server).
+      if (!siapUnduh(mediaMsg)) {
+        try {
+          const key = {
+            remoteJid: ci?.remoteJid || ctx.jid,
+            id: ci?.stanzaId,
+            fromMe: false,
+            participant: ci?.participant,
+          };
+          const ulang = await ctx.sock?.message?.requestMediaReupload?.({ key, message: { [mediaType]: mediaMsg } });
+          if (ulang?.result === 'success' && ulang.directPath) {
+            mediaMsg = { ...mediaMsg, directPath: ulang.directPath };
+            sumber = 'reupload';
+          }
+        } catch (e) {
+          console.warn('[rvo] minta unggah ulang gagal:', e?.message || e);
+        }
+      }
 
       try {
-        // Fix buffer fields yang mungkin base64 string
+        // Field biner WA bisa datang sebagai string base64/objek hasil serialisasi,
+        // bukan Uint8Array — zapo hanya menerima Uint8Array.
         const fixed = Object.assign({}, mediaMsg);
         for (const f of ['mediaKey', 'fileSha256', 'fileEncSha256']) {
-          if (typeof fixed[f] === 'string') fixed[f] = Buffer.from(fixed[f], 'base64');
+          const b = keBufferPesan(fixed[f]);
+          if (b) fixed[f] = b;
         }
 
         const buf = await client.message.downloadBytes({ [mediaType]: fixed });
@@ -3659,7 +3749,21 @@ ${rapikanError(e)}`);
           caption:  mediaMsg.caption || '',
         });
       } catch (e) {
-        await reply(`❌ Media gagal dimuat: ${rapikanError(e)}`);
+        // Kalau gagal lagi, log bentuk node-nya — biar penyebabnya kelihatan,
+        // bukan tebak-tebakan (field mana yang kosong, tipe mediaKey apa).
+        console.warn('[rvo] gagal unduh | sumber:', sumber, '| tipe:', mediaType,
+          '| directPath:', typeof mediaMsg?.directPath,
+          '| mediaKey:', mediaMsg?.mediaKey?.constructor?.name || typeof mediaMsg?.mediaKey,
+          '| field:', Object.keys(mediaMsg || {}).join(','));
+        // Tanpa mediaKey media tidak bisa didekripsi sama sekali (WhatsApp membuang
+        // kunci itu dari salinan quote pesan sekali-lihat) — beri tahu apa adanya
+        // daripada menyuruh coba lagi tanpa guna.
+        if (!keBufferPesan(mediaMsg?.mediaKey)) {
+          await reply(`❌ Media ini sudah tidak bisa dibuka — kunci medianya tidak ikut terkirim.\n`
+            + `Biasanya karena pesan sekali-lihat yang sudah lewat; coba *${p}rvo* begitu pesannya masuk.`);
+        } else {
+          await reply(`❌ Media gagal dimuat: ${rapikanError(e)}`);
+        }
       }
       return true;
     }

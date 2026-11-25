@@ -54,6 +54,23 @@ function emitSent(wam) {
 // ─── Normalisasi waktu ────────────────────────────────────────────────────────
 // WA kadang kirim timestamp dalam DETIK (~1.7e9) kadang MS (~1.7e12). Engine
 // pakai `umurMs` buat buang pesan basi (WA nge-flood ulang pas HP balik online).
+/**
+ * Buang bungkus `viewOnceMessage`/`ephemeralMessage`/`documentWithCaptionMessage`
+ * berlapis-lapis. Dipakai adapter sendiri (unduh media) dan bisa dipanggil plugin.
+ */
+const WRAP_PESAN = ['viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension',
+  'ephemeralMessage', 'documentWithCaptionMessage'];
+
+function unwrapWrap(m) {
+  let inner = m;
+  for (let i = 0; i < 5 && inner; i++) {
+    const k = Object.keys(inner).find((x) => WRAP_PESAN.includes(x));
+    if (!k || !inner[k]?.message) break;
+    inner = inner[k].message;
+  }
+  return inner;
+}
+
 function normalisasiPesan(m) {
   const t = Number(m?.messageTimestamp ?? m?.timestamp);
   const tsMs = t ? (t < 1e12 ? t * 1000 : t) : 0;
@@ -416,24 +433,46 @@ function createClient({ client, botJid = null, logger = console } = {}) {
     },
 
     /**
+     * Konten pesan ASLI dari cache quote (bukan salinan yang nempel di quote).
+     * Salinan di `contextInfo.quotedMessage` sering tidak lengkap — untuk pesan
+     * sekali-lihat (view once) WhatsApp membuang `mediaKey`/`directPath` di situ,
+     * jadi unduhan gagal dengan "message has no downloadable media" walau pesannya
+     * ada di chat. Engine menyimpan tiap pesan masuk, ambil dari sana lewat
+     * stanzaId. Balikin konten pesan atau null.
+     */
+    lookupQuote(jid, id) {
+      if (!jid || !id) return null;
+      const ev = ambilQuote(jid, id);
+      if (!ev) return null;
+      return ev.message || ev.raw?.message || null;
+    },
+
+    /**
+     * Minta pengirim unggah ulang media yang blob-nya kedaluwarsa (CDN balas
+     * 404/410). `event` = `{ key, message }`; hasilnya `{ result, directPath }`,
+     * `result: 'success'` berarti `directPath` baru siap dipakai.
+     */
+    async requestMediaReupload(event) {
+      return need('client.message.requestMediaReupload', client.message?.requestMediaReupload)(event);
+    },
+
+    /**
      * Buang bungkus view-once/ephemeral/documentWithCaption (plugin nggak
      * pernah liat bungkusnya). zapo udah unwrap, tapi pesan lama/quoted bisa
      * masih kebungkus -> tetap dirapikan.
      */
     unwrapMessage(m) {
-      const WRAP = ['viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension', 'ephemeralMessage', 'documentWithCaptionMessage'];
-      let inner = m;
-      for (let i = 0; i < 5 && inner; i++) {
-        const k = Object.keys(inner).find((x) => WRAP.includes(x));
-        if (!k || !inner[k]?.message) break;
-        inner = inner[k].message;
-      }
-      return inner;
+      return unwrapWrap(m);
     },
 
-    /** Unduh media pesan -> Buffer. Engine/plugin butuh Buffer, zapo kasih Uint8Array. */
+    /**
+     * Unduh media pesan -> Buffer. Engine/plugin butuh Buffer, zapo kasih Uint8Array.
+     * Bungkus view-once/ephemeral dibuka dulu: zapo sudah membukanya untuk pesan
+     * yang baru masuk, tapi pesan hasil quote/lamar bisa masih terbungkus — dulu
+     * langsung dioper apa adanya dan gagal "message has no downloadable media".
+     */
     async downloadBytes(msg) {
-      const src = msg?.raw || msg?.msg || msg;
+      const src = unwrapWrap(msg?.raw || msg?.msg || msg);
       const out = await need('client.message.downloadBytes', client.message?.downloadBytes)(src);
       return out ? Buffer.from(out) : out;
     },
