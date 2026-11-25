@@ -116,7 +116,7 @@ function runYtDlp(argv, timeoutMs = 180000) {
 const inflightAudioDownloads = new Map();
 
 // ─── Bantu .rvo: baca media dari quote / pesan aslinya ───────────────────────
-const TIPE_MEDIA_RVO = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'];
+const TIPE_MEDIA_RVO = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage'];
 const BUNGKUS_MEDIA = ['viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension',
   'ephemeralMessage', 'documentWithCaptionMessage'];
 
@@ -3724,7 +3724,8 @@ ${rapikanError(e)}`);
       const tersimpan = CACHE_SEKALI_LIHAT.get(ci?.stanzaId);
       if (tersimpan) {
         const tipeKirim = { imageMessage: 'image', videoMessage: 'video',
-          audioMessage: 'audio', documentMessage: 'document' }[tersimpan.tipe] || 'image';
+          audioMessage: 'audio', documentMessage: 'document',
+          stickerMessage: 'sticker' }[tersimpan.tipe] || 'image';
         await client.message.send(jid, {
           type: tipeKirim,
           media: tersimpan.buffer,
@@ -3736,6 +3737,16 @@ ${rapikanError(e)}`);
       // Buka bungkus view-once/ephemeral dulu: salinan di quote sering masih
       // terbungkus, jadi media-nya tidak ketemu.
       let isi = bukaBungkus(quoted);
+
+      // Pesan sekali-lihat TEKS juga bisa dibuka — dulu jalur ini tidak ada,
+      // jadi pesan sekali-lihat teks cuma dijawab "bukan media".
+      const teksVo = typeof isi?.conversation === 'string' ? isi.conversation
+        : (isi?.extendedTextMessage?.text || '');
+      if (teksVo) {
+        await reply(`👁️ *Pesan sekali-lihat (teks)*\n\n${teksVo}`);
+        return true;
+      }
+
       let mediaType = TIPE_MEDIA_RVO.find((t) => isi[t]);
       let mediaMsg  = mediaType ? isi[mediaType] : null;
 
@@ -3805,6 +3816,7 @@ ${rapikanError(e)}`);
           videoMessage:    'video',
           audioMessage:    'audio',
           documentMessage: 'document',
+          stickerMessage:  'sticker',
         };
         const sendType = typeMap[mediaType] || 'image';
 
@@ -3817,6 +3829,18 @@ ${rapikanError(e)}`);
       } catch (e) {
         // Kalau gagal lagi, log bentuk node-nya — biar penyebabnya kelihatan,
         // bukan tebak-tebakan (field mana yang kosong, tipe mediaKey apa).
+        // Jalan terakhir (pola dari plugin Baileys yang berhasil): relay node aslinya
+        // apa adanya dengan flag viewOnce dilepas, biar perangkat penerima yang
+        // mengambil medianya. Cuma berguna kalau node-nya masih utuh.
+        if (siapUnduh(mediaMsg)) {
+          try {
+            await client.message.send(jid, { [mediaType]: { ...mediaMsg, viewOnce: false } });
+            return true;
+          } catch (e) {
+            console.warn('[rvo] relay gagal:', e?.message || e);
+          }
+        }
+
         console.warn('[rvo] gagal unduh | sumber:', sumber, '| tipe:', mediaType,
           '| directPath:', typeof mediaMsg?.directPath,
           '| mediaKey:', mediaMsg?.mediaKey?.constructor?.name || typeof mediaMsg?.mediaKey,
