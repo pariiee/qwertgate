@@ -38,7 +38,11 @@ const { addStickerExif } = require('../../engine/sticker');
 
 const COMMANDS     = new Set(['as', 'audiosticker', 'asticker', 'stikeraudio', 'stickeraudio', 'saudio']);
 const FLAG_AUDIO   = new Set(['-audio', '--audio', '-a']);
-const TIPE_MEDIA   = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage'];
+// documentMessage ikut: audio yang dikirim sebagai FILE (mp3/m4a/opus), bukan
+// voice note, datang sebagai documentMessage. Dulu tidak masuk daftar ini, jadi
+// `.as` dengan file mp3 diam saja (laporan 2026-11-25). Ditaruh paling belakang
+// supaya tipe yang lebih spesifik tetap diprioritaskan.
+const TIPE_MEDIA   = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage', 'documentMessage'];
 const SESSION_TTL  = 5 * 60 * 1000;
 
 // Sesi per (bot, chat, pengirim) — proses ini melayani banyak bot sekaligus,
@@ -139,10 +143,19 @@ function rapikanKey(content) {
   return fixed;
 }
 
-function jenisDari(type) {
+function jenisDari(type, content) {
   if (type === 'imageMessage' || type === 'stickerMessage') return 'image';
   if (type === 'audioMessage') return 'audio';
   if (type === 'videoMessage') return 'video';
+  // File (documentMessage) bisa apa saja — tebak dari mimetype, kalau kosong dari
+  // nama filenya. Selain audio/video/gambar (mis. PDF) diabaikan.
+  if (type === 'documentMessage') {
+    const mime = String(content?.mimetype || '').toLowerCase();
+    const nama = String(content?.fileName || '').toLowerCase();
+    if (mime.startsWith('audio/') || /\.(mp3|m4a|aac|opus|ogg|oga|wav|flac|amr|wma)$/.test(nama)) return 'audio';
+    if (mime.startsWith('video/') || /\.(mp4|mkv|webm|mov|3gp)$/.test(nama)) return 'video';
+    if (mime.startsWith('image/') || /\.(jpe?g|png|webp|gif)$/.test(nama)) return 'image';
+  }
   return null;
 }
 
@@ -152,6 +165,7 @@ function contextInfo(rawMsg) {
     || rawMsg?.videoMessage?.contextInfo
     || rawMsg?.audioMessage?.contextInfo
     || rawMsg?.stickerMessage?.contextInfo
+    || rawMsg?.documentMessage?.contextInfo
     || null;
 }
 
@@ -165,7 +179,7 @@ async function kumpulkanSumber(ctx) {
     for (const type of TIPE_MEDIA) {
       const content = wadah[type];
       if (!content) continue;
-      const kind = jenisDari(type);
+      const kind = jenisDari(type, content);
       if (!kind) continue;
       try {
         const buffer = Buffer.from(await ctx.client.message.downloadBytes({ [type]: rapikanKey(content) }));
