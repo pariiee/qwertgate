@@ -36,17 +36,6 @@ const angkaJid = (jid) => String(jid || '').split('@')[0].split(':')[0];
 /** `@lid`/`@s.whatsapp.net`/array -> array JID bersih tanpa device suffix. */
 const asJids = (v) => (Array.isArray(v) ? v : [v]).filter(Boolean).map(bareJid);
 
-/**
- * Alamat Signal (user/server/device) dari sebuah JID.
- * `6281234:12@s.whatsapp.net` -> `{ user: '6281234', server: 's.whatsapp.net', device: 12 }`.
- * Dipakai jalur enkripsi grup manual (lihat `message.kirimPesanGrupMentah`).
- */
-function alamatSinyal(jid) {
-  const [userBagian, server = 's.whatsapp.net'] = String(jid || '').split('@');
-  const [user, dev] = String(userBagian || '').split(':');
-  return { user, server, device: Number(dev) || 0 };
-}
-
 // ─── Hook pesan terkirim (dipakai 02-group.js buat antidelete) ────────────────
 // Plugin nggak pernah liat pesan yang DIKIRIM bot lewat jalur pesan masuk, jadi
 // adapter nyediain hook ini. Kontraknya:
@@ -581,84 +570,58 @@ function createClient({ client, botJid = null, logger = console } = {}) {
     },
 
     /**
-     * Kirim payload `proto.Message` MENTAH ke grup sebagai pesan `skmsg` dengan
-     * `mediatype` yang kita tentukan sendiri.
+     * Kirim payload `proto.Message` MENTAH ke grup dengan `type`/`mediatype` yang
+     * kita tentukan sendiri (tema grup: `chat_theme`, sound sticker: `sticker`).
      *
-     * Dipakai fitur tema grup: WhatsApp menerima pengaturan tema sebagai
-     * `type=media`, `mediatype=chat_theme`. zapo 1.12.1 belum punya API publiknya,
-     * jadi jalur ini memakai bagian DALAM zapo yang sudah diverifikasi ada di
-     * versi itu (lihat references/porting-baileys-features.md):
-     *   - `client.message.messageDispatch.publishEncryptedMessage` — kirim stanza
-     *     terenkripsi sekaligus mengatur `mediatype`/`addressing_mode`
-     *   - `dispatch.deps.senderKeyManager.prepareGroupEncryption` — enkripsi grup
+     * zapo 1.12.1 belum membuka API publiknya, jadi jalur ini memakai bagian DALAM
+     * yang memang dipakai pengiriman grup normalnya sendiri:
+     *   - `dispatch.publishGroupSenderKeyMessage(grup, envelope)` — enkripsi sender
+     *     key + bagi kunci ke peserta yang belum punya + fanout perangkat
+     *   - `dispatch.withResolvedMessageId({})` — id pesan
      *   - `require('zapo-js').writeRandomPadMax16` — padding seperti jalur normal
-     * Kalau zapo update dan salah satunya hilang, method ini MELEMPAR error yang
+     * Kalau salah satunya hilang di update zapo, method ini MELEMPAR error yang
      * jelas — bukan diam-diam mengirim stanza yang salah.
      *
-     * Catatan: jalur normal zapo juga mengirim "sender key" ke peserta yang belum
-     * punya (SKDM). Di sini itu tidak diulang; kalau hasilnya `kunciBaru: true`
-     * artinya kunci untuk grup ini baru dibuat dan peserta mungkin belum bisa
-     * membacanya — kirim satu pesan biasa dulu di grup itu, lalu ulangi.
+     * Catatan: pernah dicoba pakai `publishEncryptedMessage` + `prepareGroupEncryption`
+     * sendiri, tapi stanzenya cacat (`invalid list size undefined`) karena bagian
+     * fanout/peserta tidak dibangun. Jalur di atas itu jalur milik zapo sendiri.
      *
-     * @param {string} jid          JID grup (`...@g.us`)
-     * @param {Buffer} bytes        payload `proto.Message` yang sudah dirakit
+     * @param {string} jid             JID grup (`...@g.us`)
+     * @param {Buffer|object} isi      payload `proto.Message` (bytes atau objek)
      * @param {object} [opts]
-     * @param {string} [opts.mediatype]     mis. `chat_theme`
-     * @param {'lid'|'pn'} [opts.addressingMode] cara grup mengalamatkan peserta (default `lid`)
+     * @param {string} [opts.mediatype] mis. `chat_theme` / `sticker`
+     * @param {string} [opts.type]      default `media`
      */
-    async kirimPesanGrupMentah(jid, bytes, { mediatype, addressingMode } = {}) {
+    async kirimPesanGrupMentah(jid, isi, { mediatype, type = 'media' } = {}) {
       const grup = bareJid(jid);
       const dispatch = client.message?.messageDispatch
         || client.messageDispatch
         || client.raw?.message?.messageDispatch
         || client.raw?.messageDispatch;
-      const skm = dispatch?.deps?.senderKeyManager;
 
-      if (typeof dispatch?.publishEncryptedMessage !== 'function'
-        || typeof skm?.prepareGroupEncryption !== 'function') {
-        throw new Error('zapo ini nggak membuka jalur kirim pesan grup terenkripsi manual '
-          + '(publishEncryptedMessage / senderKeyManager tidak ada)');
+      if (typeof dispatch?.publishGroupSenderKeyMessage !== 'function'
+        || typeof dispatch?.withResolvedMessageId !== 'function') {
+        throw new Error('zapo ini nggak membuka jalur kirim grup manual '
+          + '(publishGroupSenderKeyMessage / withResolvedMessageId tidak ada)');
       }
 
-      // Identitas bot + mode pengalamatan: ikut jalur grup milik zapo sendiri
-      // (`publishGroupDirectMessage`) supaya grup LID/PN dua-duanya benar.
-      let creds = identities || {};
-      if (!creds.meJid && !creds.meLid) {
-        try { creds = (await client.getCredentials?.()) || creds; } catch { /* pakai identities */ }
-      }
-      if (creds && typeof creds.then === 'function') creds = identities || {};
+      const { proto, writeRandomPadMax16 } = require('zapo-js');
+      const pesan = Buffer.isBuffer(isi) ? proto.Message.decode(isi) : isi;
+      const plaintext = await writeRandomPadMax16(Buffer.from(proto.Message.encode(pesan).finish()));
+      const sendOptions = await dispatch.withResolvedMessageId({});
+      const envelope = { message: pesan, plaintext, type, mediatype, sendOptions };
 
-      const meJid = (() => {
-        try { return dispatch.requireCurrentMeJid?.('kirimPesanGrupMentah'); } catch { return null; }
-      })() || creds.meJid;
-      if (!meJid) throw new Error('kredensial zapo tidak memuat JID bot');
-
-      let nada = addressingMode === 'pn' || addressingMode === 'lid' ? addressingMode : null;
       try {
-        if (!nada) {
-          const peserta = await dispatch.deps.groupMetadataCache?.resolveParticipantUsers?.(grup);
-          nada = dispatch.resolveGroupAddressingMode?.(peserta, grup) || null;
+        return await dispatch.publishGroupSenderKeyMessage(grup, envelope);
+      } catch (err) {
+        // Grup yang belum bisa pakai sender-key dikirim per perangkat, seperti
+        // jalur normal zapo. Kalau ini juga gagal, error aslinya yang dilaporkan.
+        try {
+          return await dispatch.publishGroupDirectMessage(grup, envelope);
+        } catch {
+          throw err;
         }
-      } catch { /* jatuh ke default di bawah */ }
-      nada = nada || 'lid';
-
-      let jidPengirim = null;
-      try { jidPengirim = dispatch.resolveSenderForAddressingMode?.(nada, meJid); } catch { /* parse sendiri */ }
-      if (!jidPengirim) jidPengirim = nada === 'lid' ? (creds.meLid || meJid) : meJid;
-
-      const padded = await require('zapo-js').writeRandomPadMax16(Buffer.from(bytes));
-      const hasil = await skm.prepareGroupEncryption(grup, alamatSinyal(jidPengirim), padded);
-
-      const kirim = await dispatch.publishEncryptedMessage({
-        to: grup,
-        encType: 'skmsg',
-        ciphertext: hasil.ciphertext,
-        type: 'media',
-        ...(mediatype ? { mediatype } : {}),
-        addressingMode: nada,
-      });
-
-      return { ...(kirim || {}), kunciBaru: !!hasil.distributionMessage };
+      }
     },
   };
 
