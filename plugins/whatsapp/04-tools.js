@@ -4978,11 +4978,13 @@ ${rapikanError(e)}`);
         // validateStatus: BE membalas kegagalannya dengan HTTP 500 (bukan 200).
         // Tanpa ini axios melempar lebih dulu dan blok cadangan di bawah tak pernah
         // jalan — member cuma lihat pesan error BE walau link-nya sehat.
-        // TikTok di BE sedang RUSAK: selalu gagal dan baru menyerah di detik ~16.
-        // Jadi sumber BE dibatasi 3 dtk sementara cadangan (SSR VPS + aio) sudah
-        // dijalankan BARENGAN dari detik 0 dan biasanya siap ~2 dtk — begitu BE kalah
-        // cepat, hasil cadangan sudah menunggu. Yang penting: jangan pernah menunggu
-        // BE lebih lama dari itu selama TikTok di BE belum benar.
+        // TikTok di BE kadang sehat kadang tidak: link yang SEHAT dijawab ~6 dtk,
+        // link yang rusak baru menyerah ~16 dtk. Jadi jendela 8 dtk: link sehat tetap
+        // dilayani BE (sumber utama), link rusak dilepas cepat. Cadangan (SSR VPS +
+        // aio) sudah dijalankan BARENGAN dari detik 0 dan biasanya siap ~2 dtk, jadi
+        // begitu BE kalah cepat, hasil cadangan sudah menunggu.
+        // Jangan diturunkan ke 3 dtk — link sehat yang butuh 5-6 dtk jadi kepotong
+        // dan salah dibaca sebagai slide foto (kejadian 2026-11-25).
         const cadanganPromise = ambilTikTokCadangan(url).catch((e) => {
           console.warn(`[tt] cadangan gagal: ${e.message}`);
           return null;
@@ -4992,7 +4994,7 @@ ${rapikanError(e)}`);
           ({ data } = await axios.get(`${process.env.BASE_API}api/download/tiktok`, {
             params: { url },
             headers: { 'X-API-Key': process.env.KEY_API },
-            timeout: 3000,
+            timeout: 8000,
             // validateStatus: kegagalan BE datang sebagai HTTP 500, bukan 200.
             // Tanpa ini axios melempar dan blok cadangan di bawah tak pernah jalan.
             validateStatus: () => true,

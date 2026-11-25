@@ -132,7 +132,11 @@ async function lewatAio(url) {
   const r = data.results || {};
 
   const videos = (Array.isArray(r.videos) ? r.videos : []).map((v) => normalisasiAio(v?.url)).filter(Boolean);
-  const fotos  = (Array.isArray(r.images) ? r.images : [])
+  // `images` di aio juga terisi untuk post VIDEO (itu cover/thumbnail, cuma 1).
+  // Kalau ikut dihitung, post video terbaca sebagai slide foto → jalur foto dipakai
+  // lalu gagal ("Gagal mengunduh atau mengirim slide foto TikTok"). Jadi slide hanya
+  // kalau backend memang bilang type=photo.
+  const fotos = (r.type === 'photo' && Array.isArray(r.images) ? r.images : [])
     .map((i) => normalisasiAio(typeof i === 'string' ? i : i?.url)).filter(Boolean);
   const audio  = (Array.isArray(r.audio) ? r.audio : []).map((a) => normalisasiAio(a?.url)).filter(Boolean)[0] || '';
 
