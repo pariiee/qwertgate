@@ -163,15 +163,60 @@ function keBufferPesan(v) {
   return null;
 }
 
-/** Media siap diunduh? Butuh directPath + mediaKey yang bisa jadi Uint8Array. */
+// ─── Penyelamat media pesan sekali-lihat ─────────────────────────────────────
+// WhatsApp menghapus blob media sekali-lihat begitu pesannya dibuka. Kalau bot
+// baru mengunduh saat user mengetik `.rvo`, sering sudah kehabisan — jadi
+// medianya diselamatkan saat pesannya MASUK. Batasnya ketat supaya RAM bot tidak
+// digemukkan video besar.
+const CACHE_SEKALI_LIHAT = new Map();          // key.id -> { buffer, mimetype, tipe }
+const MAKS_SEKALI_LIHAT = 10;                  // simpan 10 terakhir
+const MAKS_BYTE_SEKALI_LIHAT = 6 * 1024 * 1024;
+
+function simpanSekaliLihat(ctx) {
+  try {
+    const isi  = bukaBungkus(ctx.msg?.message);
+    const tipe = TIPE_MEDIA_RVO.find((t) => isi?.[t]);
+    const node = tipe ? isi[tipe] : null;
+    if (!node || !node.viewOnce) return;
+
+    const id = ctx.msg?.key?.id;
+    if (!id || CACHE_SEKALI_LIHAT.has(id)) return;
+    // fileLength boleh kosong di sebagian kiriman; kalau ada dan jelas kegedean, skip.
+    if (Number(node.fileLength || 0) > MAKS_BYTE_SEKALI_LIHAT) return;
+
+    void (async () => {
+      try {
+        const buf = await ctx.client.message.downloadBytes(ctx.msg);
+        if (!buf?.length || buf.length > MAKS_BYTE_SEKALI_LIHAT) return;
+        CACHE_SEKALI_LIHAT.set(id, { buffer: buf, mimetype: node.mimetype || '', tipe });
+        while (CACHE_SEKALI_LIHAT.size > MAKS_SEKALI_LIHAT) {
+          CACHE_SEKALI_LIHAT.delete(CACHE_SEKALI_LIHAT.keys().next().value);
+        }
+        console.log(`[rvo] media sekali-lihat diselamatkan (${tipe}, ${(buf.length / 1024).toFixed(0)}KB, id ${id.slice(-6)})`);
+      } catch (e) {
+        console.warn('[rvo] gagal menyelamatkan media sekali-lihat:', e?.message || e);
+      }
+    })();
+  } catch { /* penangkap tidak boleh mengganggu jalur pesan lain */ }
+}
+
+/**
+ * Media siap diunduh? Butuh `directPath` berupa string berisi + `mediaKey` yang
+ * bisa jadi Uint8Array. Field yang tidak ada sering muncul sebagai objek kosong
+ * `{}` (hasil decode proto), dan `{}` itu truthy — makanya tipe dicek, bukan
+ * cuma keberadaannya.
+ */
 function siapUnduh(node) {
-  if (!node?.directPath) return false;
+  if (!node || typeof node.directPath !== 'string' || !node.directPath) return false;
   const mk = keBufferPesan(node.mediaKey);
   return Boolean(mk && mk.length);
 }
 
 module.exports = async function toolsHandler(ctx) {
-  if (!ctx.isCmd) return false;
+  if (!ctx.isCmd) {
+    simpanSekaliLihat(ctx);   // pesan sekali-lihat: media diselamatkan saat masuk
+    return false;
+  }
 
   // ─── Helper: cari + unduh audio lagu (yt-dlp local → ffmpeg mp3) ───────────
   // Dipakai bareng `.play`, `.spotify` (tombol), dan `.spotifydl` (fallback
@@ -3674,6 +3719,20 @@ ${rapikanError(e)}`);
         return true;
       }
 
+      // Media yang sudah diselamatkan saat pesannya masuk — jalur paling andal,
+      // tidak bergantung pada salinan quote yang sudah dikosongkan WhatsApp.
+      const tersimpan = CACHE_SEKALI_LIHAT.get(ci?.stanzaId);
+      if (tersimpan) {
+        const tipeKirim = { imageMessage: 'image', videoMessage: 'video',
+          audioMessage: 'audio', documentMessage: 'document' }[tersimpan.tipe] || 'image';
+        await client.message.send(jid, {
+          type: tipeKirim,
+          media: tersimpan.buffer,
+          mimetype: tersimpan.mimetype || 'image/jpeg',
+        });
+        return true;
+      }
+
       // Buka bungkus view-once/ephemeral dulu: salinan di quote sering masih
       // terbungkus, jadi media-nya tidak ketemu.
       let isi = bukaBungkus(quoted);
@@ -3684,9 +3743,16 @@ ${rapikanError(e)}`);
       // mediaKey/directPath pesan sekali-lihat, dan zapo menolaknya dengan
       // "message has no downloadable media" walau pesannya jelas ada di chat.
       // Ambil pesan ASLINYA dari cache engine lewat stanzaId.
+      const bentukNode = (n) => n
+        ? `field: ${Object.keys(n).join(',')} | mediaKey: ${n.mediaKey?.constructor?.name || typeof n.mediaKey} (${n.mediaKey?.length ?? '-'}) | directPath: ${typeof n.directPath}`
+        : 'kosong';
       let sumber = 'quote';
       if (!siapUnduh(mediaMsg)) {
         const asli = ctx.sock?.message?.lookupQuote?.(ci?.remoteJid || ctx.jid, ci?.stanzaId);
+        console.warn('[diag-rvo] quote:', bentukNode(mediaMsg),
+          '| cache ada:', !!asli,
+          '| node cache:', bentukNode(asli && bukaBungkus(asli)?.[TIPE_MEDIA_RVO.find((x) => bukaBungkus(asli)[x])]),
+          '| stanzaId:', ci?.stanzaId, '| remoteJid:', ci?.remoteJid);
         if (asli) {
           const isiAsli = bukaBungkus(asli);
           const t = TIPE_MEDIA_RVO.find((x) => isiAsli[x]);

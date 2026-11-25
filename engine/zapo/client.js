@@ -81,12 +81,18 @@ function normalisasiPesan(m) {
 // zapo ngehapus `quotedMessage` dari contextInfo pas pesan MASUK (deep-clean),
 // jadi mau bales quote harus simpan sendiri saat pesannya lewat.
 const QUOTE_CACHE = new Map();
+// Cadangan kedua: index per-id saja. `jid` tidak selalu sama bentuknya antara
+// jalur pengirim dan jalur pembaca (chat ber-LID vs nomor, grup vs DM), jadi
+// pencarian yang hanya pakai `${jid}:${id}` bisa meleset walau pesannya ada.
+const QUOTE_BY_ID = new Map();
 const QUOTE_MAX = 300;
 function simpanQuote(map, jid, event) {
   const id = event?.id || event?.raw?.key?.id;
   if (!id) return;
   map.set(`${jid}:${id}`, event);
+  QUOTE_BY_ID.set(id, event);
   while (map.size > QUOTE_MAX) map.delete(map.keys().next().value);
+  while (QUOTE_BY_ID.size > QUOTE_MAX) QUOTE_BY_ID.delete(QUOTE_BY_ID.keys().next().value);
 }
 
 // ─── Bentuk konten: bahasa plugin (engine lama) -> bahasa zapo ────────────────────
@@ -441,8 +447,8 @@ function createClient({ client, botJid = null, logger = console } = {}) {
      * stanzaId. Balikin konten pesan atau null.
      */
     lookupQuote(jid, id) {
-      if (!jid || !id) return null;
-      const ev = ambilQuote(jid, id);
+      if (!id) return null;
+      const ev = (jid ? ambilQuote(jid, id) : null) || QUOTE_BY_ID.get(id) || null;
       if (!ev) return null;
       return ev.message || ev.raw?.message || null;
     },
@@ -834,6 +840,20 @@ function createClient({ client, botJid = null, logger = console } = {}) {
       let ev2;
       try { ev2 = normalizeIncoming(rawEv); } catch (e) { logger.warn?.('[zapo] normalize pesan gagal:', e.message); return; }
       // simpan buat quote: plugin sering balas pesan yang baru masuk
+      // [DIAG rvo] sementara: catat bentuk node media pesan sekali-lihat yang MASUK,
+      // biar kelihatan apakah kunci medianya sampai ke bot. Hapus setelah selesai.
+      try {
+        const isi = unwrapWrap(rawEv?.message || {});
+        const tipeV = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].find((t) => isi[t]);
+        if (tipeV && isi[tipeV]?.viewOnce) {
+          const n = isi[tipeV];
+          logger.warn?.(`[diag-rvo] masuk | tipe: ${tipeV} | field: ${Object.keys(n).join(',')}`
+            + ` | mediaKey: ${n.mediaKey?.constructor?.name || typeof n.mediaKey} (${n.mediaKey?.length ?? '-'})`
+            + ` | directPath: ${typeof n.directPath} (${typeof n.directPath === 'string' ? n.directPath.slice(0, 24) : '-'})`
+            + ` | viewOnce: ${n.viewOnce} | bungkus: ${Object.keys(rawEv?.message || {}).join(',')}`);
+        }
+      } catch { /* diagnostik tidak boleh mengganggu jalur pesan */ }
+
       simpanQuote(quoteCache, ev2.chatJid, rawEv);
       ev.emit('messages.upsert', { messages: [ev2], type: 'notify' });
     };
