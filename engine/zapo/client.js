@@ -654,6 +654,27 @@ function createClient({ client, botJid = null, logger = console } = {}) {
     },
 
     /**
+     * Daftar permintaan gabung yang masih menunggu persetujuan admin grup.
+     * zapo balikin `WaMembershipRequest` (`{ jid, requestor, requestorPhone,
+     * requestorUsername, requestTime, ... }`); adapter menormalkannya jadi
+     * `{ jid, nomor, nama, waktu }` supaya plugin tidak ikut berubah kalau
+     * bentuk aslinya bergeser.
+     */
+    async queryMembershipApprovalRequests(jid) {
+      const g = grupKey(jid);
+      const res = await need('client.group.queryMembershipApprovalRequests', client.group?.queryMembershipApprovalRequests)(g);
+      return (Array.isArray(res) ? res : []).map((req) => {
+        const mentah = String(req?.requestorPhone || req?.requestor || req?.jid || '');
+        return {
+          jid: req?.jid,
+          nomor: mentah.split('@')[0].split(':')[0].replace(/\D/g, ''),
+          nama: req?.requestorUsername || '',
+          waktu: Number(req?.requestTime || 0),
+        };
+      }).filter((req) => req.jid);
+    },
+
+    /**
      * `setSetting(jid, setting, value)` — nama setting sisi zapo.
      *
      * Plugin (warisan engine lama) manggil pakai `'open'`/`'close'`, sedangkan zapo

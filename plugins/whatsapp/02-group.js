@@ -7,7 +7,7 @@
  *           setname, setdesc, link,
  *           groupinfo, idgc, leavegc, listadmin, pp/getpp, getppgc, totag,
  *           delete, cekasalmember, absen, mulaiabsen, cekabsen, hapusabsen,
- *           afk, listafk, topchat
+ *           afk, listafk, topchat, acc (setujui permintaan gabung)
  */
 
 const { rapikanError } = require('../../engine/pesanError');
@@ -649,6 +649,42 @@ module.exports = async function groupHandler(ctx) {
           text: text || '\u200e',
           mentions: mentionJids,
         });
+      }
+      return true;
+    }
+
+    // ── acc — setujui permintaan gabung grup ─────────────────────────────────
+    // `.acc` = lihat siapa saja yang menunggu, `.acc all` = setujui semuanya.
+    // Wajib admin grup DAN bot harus admin: WhatsApp menolak approve tanpa itu.
+    case 'acc':
+    case 'accall': {
+      if (!await isBotAdmin()) { await reply(mess.BotAdmin); return true; }
+      if (!await isAdmin()) { await reply(mess.GrupAdmin); return true; }
+
+      const setujuSemua = command === 'accall'
+        || ['all', 'semua', 'ya', 'yes'].includes(String(args?.[0] || '').toLowerCase());
+
+      try {
+        const daftar = await client.group.queryMembershipApprovalRequests(jid);
+        if (!daftar.length) {
+          await reply('✅ Tidak ada permintaan gabung yang menunggu di grup ini.');
+          return true;
+        }
+
+        const cuplik = daftar.slice(0, 30).map((r, i) =>
+          `${i + 1}. +${r.nomor || String(r.jid).split('@')[0].split(':')[0]}${r.nama ? ` (${r.nama})` : ''}`);
+        const sisa = daftar.length > cuplik.length ? `\n… dan ${daftar.length - cuplik.length} lainnya` : '';
+
+        if (!setujuSemua) {
+          await reply(`📋 *${daftar.length} permintaan gabung* menunggu:\n\n${cuplik.join('\n')}${sisa}`
+            + `\n\nSetujui semua: *${p}acc all*`);
+          return true;
+        }
+
+        await client.group.approveMembershipRequests(jid, daftar.map((r) => r.jid));
+        await reply(`✅ *${daftar.length} permintaan gabung* disetujui.${sisa ? '' : `\n\n${cuplik.join('\n')}`}`);
+      } catch (e) {
+        await reply(`❌ Gagal memproses permintaan gabung: ${rapikanError(e)}`);
       }
       return true;
     }
@@ -1859,5 +1895,5 @@ module.exports.limitedCmds = new Set([
   'link','groupinfo','idgc','leavegc','listadmin',
   'getpp','pp','totag','delete','cekasalmember',
   'mulaiabsen','absen','cekabsen','hapusabsen',
-  'afk','listafk','topchat','swgc','upswgc',
+  'afk','listafk','topchat','swgc','upswgc','acc','accall',
 ]);
