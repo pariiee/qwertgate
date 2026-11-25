@@ -26,6 +26,9 @@ const MAKS_BYTE = 6 * 1024 * 1024;
 const TIPE_MEDIA = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage'];
 const BUNGKUS = ['viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension',
   'ephemeralMessage', 'documentWithCaptionMessage'];
+// Bungkus yang menandakan pesan sekali-lihat: sebagian kiriman tidak menyetel
+// `viewOnce` di node medianya, jadi bungkusnya juga dipakai sebagai penanda.
+const BUNGKUS_SEKALI_LIHAT = ['viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension'];
 
 /** Buka bungkus view-once/ephemeral berlapis pada konten pesan. */
 function buka(c) {
@@ -38,11 +41,15 @@ function buka(c) {
   return isi;
 }
 
-/** Node media di dalam konten pesan (setelah bungkusnya dibuka), atau null. */
+/**
+ * Node media di dalam konten pesan (setelah bungkusnya dibuka).
+ * @returns {{tipe: string, node: object, adaBungkus: boolean}|null}
+ */
 function nodeMedia(konten) {
+  const adaBungkus = BUNGKUS_SEKALI_LIHAT.some((b) => konten?.[b]?.message);
   const isi = buka(konten);
   const tipe = TIPE_MEDIA.find((t) => isi?.[t]);
-  return tipe ? { tipe, node: isi[tipe] } : null;
+  return tipe ? { tipe, node: isi[tipe], adaBungkus } : null;
 }
 
 /**
@@ -58,7 +65,7 @@ async function tangkap(adapter, pesan, log = console) {
     if (!id || CACHE.has(id)) return false;
 
     const media = nodeMedia(pesan?.message);
-    if (!media || !media.node?.viewOnce) return false;
+    if (!media || !(media.node?.viewOnce || media.adaBungkus)) return false;
     // fileLength boleh kosong di sebagian kiriman; kalau ada dan jelas kegedean, skip.
     if (Number(media.node.fileLength || 0) > MAKS_BYTE) return false;
 
