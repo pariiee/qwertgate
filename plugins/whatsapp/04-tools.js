@@ -178,8 +178,6 @@ function siapUnduh(node) {
 
 module.exports = async function toolsHandler(ctx) {
   if (!ctx.isCmd) {
-    // Pesan sekali-lihat: medianya diselamatkan saat pesannya masuk (lihat engine/sekaliLihat.js)
-    sekaliLihat.tangkap(ctx.client, ctx.msg);
     return false;
   }
 

@@ -594,16 +594,15 @@ async function startWhatsAppBot(botData, usePairingCode = false) {
       } catch { /* non-critical */ }
     }
 
+    // Media pesan sekali-lihat diselamatkan di sini — SEBELUM pesan dilewati
+    // (pesan fromMe) atau diteruskan ke plugin. WhatsApp menghapus blob media
+    // sekali-lihat begitu pesannya dibuka, jadi kalau tidak disimpan sekarang,
+    // `.rvo` tidak punya apa pun untuk diunduh. Pesan biasa langsung diabaikan
+    // tanpa unduhan, jadi aman dipanggil untuk semua pesan.
+    sekaliLihat.tangkap(api, event);
+
     // Skip pesan dari diri sendiri — kecuali delete event (dikirim dengan fromMe=true).
-    // Tapi media pesan sekali-lihat milik kita sendiri diselamatkan dulu: engine tidak
-    // meneruskan pesan fromMe ke plugin, jadi tanpa ini `.rvo` tidak punya data sama
-    // sekali untuk pesan yang dikirim dari nomor bot.
-    if (key?.fromMe && !isDeleteEvent) {
-      if (msgType === 'viewOnceMessage' || msgType === 'viewOnceMessageV2' || msgType === 'viewOnceMessageV2Extension') {
-        sekaliLihat.tangkap(api, event);
-      }
-      return;
-    }
+    if (key?.fromMe && !isDeleteEvent) return;
 
     // Skip pesan sistem (encryption handshake, dll) — bukan pesan user
     // Tapi protocolMessage type 0 (delete) tetap diteruskan untuk antidelete
