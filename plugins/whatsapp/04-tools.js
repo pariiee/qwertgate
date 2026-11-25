@@ -3717,16 +3717,9 @@ ${rapikanError(e)}`);
       // mediaKey/directPath pesan sekali-lihat, dan zapo menolaknya dengan
       // "message has no downloadable media" walau pesannya jelas ada di chat.
       // Ambil pesan ASLINYA dari cache engine lewat stanzaId.
-      const bentukNode = (n) => n
-        ? `field: ${Object.keys(n).join(',')} | mediaKey: ${n.mediaKey?.constructor?.name || typeof n.mediaKey} (${n.mediaKey?.length ?? '-'}) | directPath: ${typeof n.directPath}`
-        : 'kosong';
       let sumber = 'quote';
       if (!siapUnduh(mediaMsg)) {
         const asli = ctx.sock?.message?.lookupQuote?.(ci?.remoteJid || ctx.jid, ci?.stanzaId);
-        console.warn('[diag-rvo] quote:', bentukNode(mediaMsg),
-          '| cache ada:', !!asli,
-          '| node cache:', bentukNode(asli && bukaBungkus(asli)?.[TIPE_MEDIA_RVO.find((x) => bukaBungkus(asli)[x])]),
-          '| stanzaId:', ci?.stanzaId, '| remoteJid:', ci?.remoteJid);
         if (asli) {
           const isiAsli = bukaBungkus(asli);
           const t = TIPE_MEDIA_RVO.find((x) => isiAsli[x]);
@@ -3808,12 +3801,13 @@ ${rapikanError(e)}`);
           '| directPath:', typeof mediaMsg?.directPath,
           '| mediaKey:', mediaMsg?.mediaKey?.constructor?.name || typeof mediaMsg?.mediaKey,
           '| field:', Object.keys(mediaMsg || {}).join(','));
-        // Tanpa mediaKey media tidak bisa didekripsi sama sekali (WhatsApp membuang
-        // kunci itu dari salinan quote pesan sekali-lihat) — beri tahu apa adanya
-        // daripada menyuruh coba lagi tanpa guna.
+        // Tanpa mediaKey media tidak bisa didekripsi (WhatsApp membuang kuncinya).
+        // Selama bot mengaku klien web, WhatsApp memang tidak mengirim media pesan
+        // sekali-lihat ke bot — jadi jangan menyuruh user coba lagi tanpa guna.
         if (!keBufferPesan(mediaMsg?.mediaKey)) {
-          await reply(`❌ Media ini sudah tidak bisa dibuka — kunci medianya tidak ikut terkirim.\n`
-            + `Biasanya karena pesan sekali-lihat yang sudah lewat; coba *${p}rvo* begitu pesannya masuk.`);
+          await reply(`❌ Media ini tidak bisa dibuka.\n`
+            + `WhatsApp tidak mengirim file media pesan sekali-lihat ke bot (perangkat tertaut biasa cuma dapat petunjuk kosong), `
+            + `jadi memang tidak ada yang bisa diunduh — buka saja di HP.`);
         } else {
           await reply(`❌ Media gagal dimuat: ${rapikanError(e)}`);
         }

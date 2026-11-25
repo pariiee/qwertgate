@@ -840,21 +840,6 @@ function createClient({ client, botJid = null, logger = console } = {}) {
       let ev2;
       try { ev2 = normalizeIncoming(rawEv); } catch (e) { logger.warn?.('[zapo] normalize pesan gagal:', e.message); return; }
       // simpan buat quote: plugin sering balas pesan yang baru masuk
-      // [DIAG rvo] sementara: catat bentuk node media pesan sekali-lihat yang MASUK,
-      // biar kelihatan apakah kunci medianya sampai ke bot. Hapus setelah selesai.
-      try {
-        const isi = unwrapWrap(rawEv?.message || {});
-        const tipeV = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage'].find((t) => isi[t]);
-        const n = tipeV ? isi[tipeV] : null;
-        const mentah = JSON.stringify(rawEv?.message || {});
-        if (n?.viewOnce || mentah.includes('viewOnce') || mentah.includes('view_once')) {
-          logger.warn?.(`[diag-rvo] in | tipe: ${tipeV || '-'} | bungkus: ${Object.keys(rawEv?.message || {}).join(',')}`
-            + ` | viewOnce: ${n?.viewOnce} | mediaKey: ${n?.mediaKey?.constructor?.name || typeof n?.mediaKey} (${n?.mediaKey?.length ?? '-'})`
-            + ` | directPath: ${typeof n?.directPath} | url: ${typeof n?.url} | fileLength: ${n?.fileLength ?? '-'}`
-            + ` | fromMe: ${!!rawEv?.fromMe} | id: ${rawEv?.id}`);
-        }
-      } catch { /* diagnostik tidak boleh mengganggu jalur pesan lain */ }
-
       simpanQuote(quoteCache, ev2.chatJid, rawEv);
       ev.emit('messages.upsert', { messages: [ev2], type: 'notify' });
     };
