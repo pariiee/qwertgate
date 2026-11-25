@@ -121,6 +121,22 @@ function sesiTerbaruDiChat(ctx) {
   return terbaru;
 }
 
+// Sesi lain yang masih menunggu di chat yang sama. Dipakai untuk memberi tahu
+// admin kalau kiriman member lain belum dijawab `1`/`0` — `1` hanya memproses
+// satu sesi (yang paling baru), jadi tanpa info ini terasa "cuma satu yang jadi".
+function sesiLainDiChat(ctx, kecuali) {
+  const awalan = `${ctx.botData?.id ?? '?'}:${ctx.jid}:`;
+  const sekarang = Date.now();
+  let jumlah = 0;
+  for (const [key, sesi] of sessions) {
+    if (kecuali?.kunci && key === kecuali.kunci) continue;
+    if (!key.startsWith(awalan)) continue;
+    if (sekarang > sesi.expiresAt) continue;
+    jumlah++;
+  }
+  return jumlah;
+}
+
 function hapusSesiObj(sesi) {
   if (!sesi) return;
   if (sesi.timer) clearTimeout(sesi.timer);
@@ -471,15 +487,21 @@ module.exports = async function audioStickerHandler(ctx) {
       });
 
       if (teks === '1' || /^(ya|yes|iy(a|e))$/.test(teks)) {
+        // Tanda "sedang diproses" — dulu cuma ada ✅ di akhir, jadi user tidak tahu
+        // jawabannya diterima atau ditolak sampai stikernya muncul.
+        await react(mess.reactLoading).catch(() => {});
         try {
           const gambar = sesi.image || await ambilGambar();
           const res = await kirimAudioSticker(ctx, gambar, sesi.video);
           hapusSesiObj(sesi);
           await react(mess.reactSuccess).catch(() => {});
-          await reply(`${kabarSukses(res)}\n_Video jadi stiker audio._`);
+          const sisa = sesiLainDiChat(ctx, sesi);
+          await reply(`${kabarSukses(res)}\n_Video jadi stiker audio._`
+            + (sisa ? `\n\nℹ️ Masih ada *${sisa}* permintaan lain menunggu di chat ini — balas \`1\` lagi untuk memprosesnya.` : ''));
         } catch (e) {
           hapusSesiObj(sesi);
           console.error('[ASTICKER] gagal (video jadi audio sticker):', e?.stack || e?.message || e);
+          await react(mess.reactError).catch(() => {});
           await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
         }
         return true;
@@ -511,6 +533,7 @@ module.exports = async function audioStickerHandler(ctx) {
     const video  = sesi.video || sumber.find((s) => s.kind === 'video');
 
     if (gambar && (audio || video)) {
+      await react(mess.reactLoading).catch(() => {});
       try {
         const res = await kirimAudioSticker(ctx, gambar, audio || video);
         hapusSesiObj(sesi);
@@ -519,6 +542,7 @@ module.exports = async function audioStickerHandler(ctx) {
       } catch (e) {
         hapusSesiObj(sesi);
         console.error('[ASTICKER] gagal (media susulan):', e?.stack || e?.message || e);
+        await react(mess.reactError).catch(() => {});
         await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
       }
       return true;
@@ -556,6 +580,7 @@ module.exports = async function audioStickerHandler(ctx) {
   const video  = sumber.find((s) => s.kind === 'video');
 
   if (gambar && audio) {
+    await react(mess.reactLoading).catch(() => {});
     try {
       const res = await kirimAudioSticker(ctx, gambar, audio);
       hapusSesi(ctx);
@@ -564,6 +589,7 @@ module.exports = async function audioStickerHandler(ctx) {
     } catch (e) {
       hapusSesi(ctx);
       console.error('[ASTICKER] gagal kirim:', e?.stack || e?.message || e);
+      await react(mess.reactError).catch(() => {});
       await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
     }
     return true;
