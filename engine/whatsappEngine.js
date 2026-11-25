@@ -14,6 +14,7 @@ const { pool, incrementStat } = require('../config/database');
 const { jadwalkanNotifMati } = require('./watchdog');
 const { activeBots, activeGroupsPerBot, activeChannelsPerBot } = require('../controllers/botController');
 const { isPendingSewa } = require('./pendingSewa');
+const sekaliLihat = require('./sekaliLihat');
 
 // Track grup yang sudah dikirimi pesan "tidak terdaftar" agar tidak spam
 // Key: `${botId}:${groupJid}` — hapus otomatis setelah 10 menit
@@ -593,8 +594,16 @@ async function startWhatsAppBot(botData, usePairingCode = false) {
       } catch { /* non-critical */ }
     }
 
-    // Skip pesan dari diri sendiri — kecuali delete event (dikirim dengan fromMe=true)
-    if (key?.fromMe && !isDeleteEvent) return;
+    // Skip pesan dari diri sendiri — kecuali delete event (dikirim dengan fromMe=true).
+    // Tapi media pesan sekali-lihat milik kita sendiri diselamatkan dulu: engine tidak
+    // meneruskan pesan fromMe ke plugin, jadi tanpa ini `.rvo` tidak punya data sama
+    // sekali untuk pesan yang dikirim dari nomor bot.
+    if (key?.fromMe && !isDeleteEvent) {
+      if (msgType === 'viewOnceMessage' || msgType === 'viewOnceMessageV2' || msgType === 'viewOnceMessageV2Extension') {
+        sekaliLihat.tangkap(api, event);
+      }
+      return;
+    }
 
     // Skip pesan sistem (encryption handshake, dll) — bukan pesan user
     // Tapi protocolMessage type 0 (delete) tetap diteruskan untuk antidelete

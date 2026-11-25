@@ -11,6 +11,7 @@ const { genThumbnail, jpegkan } = require('../../engine/thumbnail');
 const { addStickerExif, videoKeStickerWebp } = require('../../engine/sticker');
 const { uploadInfo, upload, apiGet, url: apiUrl, auth: apiAuth } = require('../../engine/api');
 const { normalVideo } = require('../../engine/normalVideo');
+const sekaliLihat = require('../../engine/sekaliLihat');
 const { ambilTikTokCadangan, adaMediaTikTok } = require('../../engine/tiktok');
 
 // ─── Helper: mime type → ekstensi file ───────────────────────────────────────
@@ -163,43 +164,6 @@ function keBufferPesan(v) {
   return null;
 }
 
-// ─── Penyelamat media pesan sekali-lihat ─────────────────────────────────────
-// WhatsApp menghapus blob media sekali-lihat begitu pesannya dibuka. Kalau bot
-// baru mengunduh saat user mengetik `.rvo`, sering sudah kehabisan — jadi
-// medianya diselamatkan saat pesannya MASUK. Batasnya ketat supaya RAM bot tidak
-// digemukkan video besar.
-const CACHE_SEKALI_LIHAT = new Map();          // key.id -> { buffer, mimetype, tipe }
-const MAKS_SEKALI_LIHAT = 10;                  // simpan 10 terakhir
-const MAKS_BYTE_SEKALI_LIHAT = 6 * 1024 * 1024;
-
-function simpanSekaliLihat(ctx) {
-  try {
-    const isi  = bukaBungkus(ctx.msg?.message);
-    const tipe = TIPE_MEDIA_RVO.find((t) => isi?.[t]);
-    const node = tipe ? isi[tipe] : null;
-    if (!node || !node.viewOnce) return;
-
-    const id = ctx.msg?.key?.id;
-    if (!id || CACHE_SEKALI_LIHAT.has(id)) return;
-    // fileLength boleh kosong di sebagian kiriman; kalau ada dan jelas kegedean, skip.
-    if (Number(node.fileLength || 0) > MAKS_BYTE_SEKALI_LIHAT) return;
-
-    void (async () => {
-      try {
-        const buf = await ctx.client.message.downloadBytes(ctx.msg);
-        if (!buf?.length || buf.length > MAKS_BYTE_SEKALI_LIHAT) return;
-        CACHE_SEKALI_LIHAT.set(id, { buffer: buf, mimetype: node.mimetype || '', tipe });
-        while (CACHE_SEKALI_LIHAT.size > MAKS_SEKALI_LIHAT) {
-          CACHE_SEKALI_LIHAT.delete(CACHE_SEKALI_LIHAT.keys().next().value);
-        }
-        console.log(`[rvo] media sekali-lihat diselamatkan (${tipe}, ${(buf.length / 1024).toFixed(0)}KB, id ${id.slice(-6)})`);
-      } catch (e) {
-        console.warn('[rvo] gagal menyelamatkan media sekali-lihat:', e?.message || e);
-      }
-    })();
-  } catch { /* penangkap tidak boleh mengganggu jalur pesan lain */ }
-}
-
 /**
  * Media siap diunduh? Butuh `directPath` berupa string berisi + `mediaKey` yang
  * bisa jadi Uint8Array. Field yang tidak ada sering muncul sebagai objek kosong
@@ -214,7 +178,8 @@ function siapUnduh(node) {
 
 module.exports = async function toolsHandler(ctx) {
   if (!ctx.isCmd) {
-    simpanSekaliLihat(ctx);   // pesan sekali-lihat: media diselamatkan saat masuk
+    // Pesan sekali-lihat: medianya diselamatkan saat pesannya masuk (lihat engine/sekaliLihat.js)
+    sekaliLihat.tangkap(ctx.client, ctx.msg);
     return false;
   }
 
@@ -3721,7 +3686,7 @@ ${rapikanError(e)}`);
 
       // Media yang sudah diselamatkan saat pesannya masuk — jalur paling andal,
       // tidak bergantung pada salinan quote yang sudah dikosongkan WhatsApp.
-      const tersimpan = CACHE_SEKALI_LIHAT.get(ci?.stanzaId);
+      const tersimpan = sekaliLihat.ambil(ci?.stanzaId);
       if (tersimpan) {
         const tipeKirim = { imageMessage: 'image', videoMessage: 'video',
           audioMessage: 'audio', documentMessage: 'document',
