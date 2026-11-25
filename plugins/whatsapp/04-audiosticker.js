@@ -392,8 +392,13 @@ async function kirimAudioSticker(ctx, sumberGambar, sumberAudio) {
   // Upload lewat adapter engine (engine/zapo/client.js). Plugin TIDAK dapat
   // client zapo mentah — `client.message.upload` nggak ada di adapter, yang ada
   // `prepareMedia(buffer, { type, mimetype })` yang balikin proto siap pakai.
+  // Audio di-upload sebagai AUDIO BIASA, bukan voice note (`ptt`).
+  // Sound sticker di WA asli bawa AudioMessage biasa: `audio/ogg; codecs=opus`
+  // dengan `ptt` TIDAK diset. Waktu kita kirim `ptt: true`, klien WA memperlakukan
+  // lampiran itu sebagai voice note di dalam stiker dan muncul
+  // "Couldn't play sticker sound".
   const [upAudio, upSticker] = await Promise.all([
-    client.message.prepareMedia(opus.buf, { type: 'ptt', mimetype: opus.mimetype }),
+    client.message.prepareMedia(opus.buf, { type: 'audio', mimetype: opus.mimetype }),
     client.message.prepareMedia(webpBuf, { type: 'sticker', mimetype: 'image/webp' }),
   ]);
   const a = upAudio?.audioMessage;
@@ -407,7 +412,8 @@ async function kirimAudioSticker(ctx, sumberGambar, sumberAudio) {
     ...a,
     mimetype: a.mimetype || opus.mimetype,
     mediaKeyTimestamp: a.mediaKeyTimestamp || sekarang,
-    ptt: true,
+    // `ptt: false` = audio biasa, BUKAN voice note (lihat catatan upload di atas).
+    ptt: false,
     ...(opus.seconds != null ? { seconds: opus.seconds } : {}),
     ...(waveform ? { waveform } : {}),
     contextInfo: { mediaDomainInfo: domain(a.mediaKey) },
