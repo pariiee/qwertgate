@@ -56,7 +56,10 @@ async function addStickerExif(webpBuffer, packname, author) {
 // kalau nanti masih ada yang kejegal.
 const UKURAN_STICKER = 512;
 // Semua jalur sticker lewat filter ini: px JANGAN pernah dikecilin, cuma scale+pad.
-const SKALA_512 = `scale=${UKURAN_STICKER}:${UKURAN_STICKER}:force_original_aspect_ratio=decrease,pad=${UKURAN_STICKER}:${UKURAN_STICKER}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
+// `format=yuva420p` WAJIB di ujung: tanpa itu encoder mengabaikan alpha dari
+// color=0x00000000 dan bantalan rata-rata keluar HITAM — GIF/video landscape jadi
+// stiker bergaris hitam atas-bawah (laporan 2026-11-25, terukur: alpha 255 vs 0).
+const SKALA_512 = `scale=${UKURAN_STICKER}:${UKURAN_STICKER}:force_original_aspect_ratio=decrease,pad=${UKURAN_STICKER}:${UKURAN_STICKER}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=yuva420p`;
 const TANGGA_STICKER = [
   { fps: 12, q: 70 },
   { fps: 10, q: 60 },
