@@ -11,6 +11,7 @@ const { genThumbnail, jpegkan } = require('../../engine/thumbnail');
 const { addStickerExif, videoKeStickerWebp } = require('../../engine/sticker');
 const { uploadInfo, upload, apiGet, url: apiUrl, auth: apiAuth } = require('../../engine/api');
 const { normalVideo } = require('../../engine/normalVideo');
+const { ambilTikTokCadangan, adaMediaTikTok } = require('../../engine/tiktok');
 
 // ─── Helper: mime type → ekstensi file ───────────────────────────────────────
 function mimeToExt(mime) {
@@ -4973,16 +4974,37 @@ ${rapikanError(e)}`);
         // Sekarang: beri BE kesempatan menyelesaikan 9 dtk-nya, sisakan jeda buat
         // kirim media (video diunduh di bawah dengan timeout 90 dtk sendiri).
         // satu angka sinkron dgn TIMEOUT BE — kalau BE diubah, samakan.
+        // validateStatus: BE membalas kegagalannya dengan HTTP 500 (bukan 200).
+        // Tanpa ini axios melempar lebih dulu dan blok cadangan di bawah tak pernah
+        // jalan — member cuma lihat pesan error BE walau link-nya sehat.
         const { data } = await axios.get(`${process.env.BASE_API}api/download/tiktok`, {
           params: { url },
           headers: { 'X-API-Key': process.env.KEY_API },
           timeout: 20000,
+          validateStatus: () => true,
         });
-        const res     = data?.results || {};
+        let   res     = data?.results || {};
         // BE udah ngasih alasan yang manusiawi ("linknya udah nggak ada", "ini post
         // foto, bukan video"). Dulu alasan itu dibuang dan diganti kalimat generik,
         // jadi member nggak pernah tahu kenapa gagalnya.
-        const alasanBe = data?.message || '';
+        let   alasanBe = data?.message || '';
+
+        // Endpoint YaPari bisa balas success:false padahal link-nya SAH — yang kena
+        // blok adalah scraper TikTok di sisi BE ("ssr retry 0..2: status 200 tanpa
+        // api-data"). Cadangan: metadata dari SSR yang diambil VPS ini sendiri +
+        // media lewat backend aio, karena CDN TikTok membalas 403 ke IP VPS ini.
+        if (!data?.success || !adaMediaTikTok(res)) {
+          try {
+            const cadangan = await ambilTikTokCadangan(url);
+            if (cadangan) {
+              console.log(`[tt] pakai cadangan: ${cadangan.sumber}`);
+              res = cadangan.res;
+              alasanBe = '';
+            }
+          } catch (e) {
+            console.warn(`[tt] cadangan gagal: ${e.message}`);
+          }
+        }
         const title   = res.title  || res.description || '';
         const author  = res.author?.nickname || res.author?.uniqueId || '';
         const caption = `🎵 *TikTok*${title ? `\n${title}` : ''}${author ? `\n👤 ${author}` : ''}`;
