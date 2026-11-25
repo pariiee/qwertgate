@@ -298,9 +298,39 @@ async function frameKeWebp(video) {
     .toBuffer();
 }
 
+// Video -> WebP ANIMASI (bukan satu frame). Sound sticker di WA = stiker
+// bergerak + audio. Kalau videonya diratakan jadi satu frame, member cuma dapat
+// foto bersuara — itu yang dilaporkan 2026-11-25.
+// Terukur: video 17 dtk 720x1280 → 512px fps15 q70 = ~316 KB. Jadi jalur normal
+// (tahap pertama) hampir selalu cukup; tahap berikutnya cuma jaring pengaman
+// untuk video panjang.
+const BATAS_ANIMASI = 900 * 1024;
+async function videoKeWebpAnimasi(video) {
+  const tahap = [
+    { detik: 0, fps: 15, q: 70 },
+    { detik: 8, fps: 12, q: 60 },
+    { detik: 5, fps: 10, q: 50 },
+  ];
+  for (const t of tahap) {
+    const args = ['-v', 'error', '-i', 'pipe:0'];
+    if (t.detik) args.push('-t', String(t.detik));
+    args.push(
+      '-vf', `scale=512:512:force_original_aspect_ratio=decrease,fps=${t.fps}`,
+      '-c:v', 'libwebp_anim', '-loop', '0', '-q:v', String(t.q),
+      '-an', '-f', 'webp', 'pipe:1',
+    );
+    const { buf } = await ffmpegPipe(args, video);
+    if (buf.length <= BATAS_ANIMASI) return buf;
+    console.warn(`[ASTICKER] webp animasi ${(buf.length / 1048576).toFixed(1)} MB (fps ${t.fps}, q ${t.q}) — coba setting lebih kecil`);
+  }
+  // Masih kegedean (video panjang banget): turun ke satu frame supaya tetap kirim.
+  console.warn('[ASTICKER] webp animasi tetap kegedean — turun ke satu frame');
+  return frameKeWebp(video);
+}
+
 async function keWebp(src) {
   if (isWebp(src.buffer)) return src.buffer;
-  if (src.kind === 'video') return frameKeWebp(src.buffer);
+  if (src.kind === 'video') return videoKeWebpAnimasi(src.buffer);
 
   if (/gif/i.test(src.mime) || src.type === 'gif') {
     const { buf } = await ffmpegPipe([
@@ -385,8 +415,8 @@ const caraPakai = (p) =>
   `> Reply audio/voice note, kirim gambar/stiker + caption \`${p}as\`\n` +
   `> Reply gambar/stiker, kirim audio/voice note + caption \`${p}as\`\n` +
   `> Kirim video + caption \`${p}as\`, lalu pilih:\n` +
-  `> \`1\` = video langsung jadi audio sticker (frame video + audio video)\n` +
-  `> \`0\` = pakai frame video + audio custom\n\n` +
+  `> \`1\` = video langsung jadi audio sticker (stiker bergerak + audio video)\n` +
+  `> \`0\` = stiker bergerak dari video + audio custom\n\n` +
   `Bisa juga lewat \`${p}s -audio\` atau \`${p}saudio\`.`;
 
 const kabarSukses = (res) =>
@@ -418,16 +448,17 @@ module.exports = async function audioStickerHandler(ctx) {
     const teks = String(ctx.body || '').trim().toLowerCase();
 
     if (sesi.stage === 'pilihVideo') {
-      const ambilFrame = async () => ({
-        buffer: await frameKeWebp(sesi.video.buffer),
-        kind: 'image',
-        type: 'stickerMessage',
-        mime: 'image/webp',
+      // Visual = VIDEONYA (nanti jadi webp animasi di keWebp), bukan satu frame.
+      const ambilGambar = async () => ({
+        buffer: sesi.video.buffer,
+        kind: 'video',
+        type: 'videoMessage',
+        mime: sesi.video.mime || 'video/mp4',
       });
 
       if (teks === '1' || /^(ya|yes|iy(a|e))$/.test(teks)) {
         try {
-          const gambar = sesi.image || await ambilFrame();
+          const gambar = sesi.image || await ambilGambar();
           const res = await kirimAudioSticker(ctx, gambar, sesi.video);
           hapusSesiObj(sesi);
           await react(mess.reactSuccess).catch(() => {});
@@ -442,7 +473,7 @@ module.exports = async function audioStickerHandler(ctx) {
 
       if (teks === '0' || /^(no|tidak|nggak|gak)$/.test(teks)) {
         try {
-          const gambar = sesi.image || await ambilFrame();
+          const gambar = sesi.image || await ambilGambar();
           setSesi(ctx, { stage: 'audio', image: gambar }, sesi.kunci);
           await reply('Oke, kirim *audio/voice note* custom yang mau dipakai.');
         } catch (e) {
