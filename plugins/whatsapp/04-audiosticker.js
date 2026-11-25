@@ -70,11 +70,18 @@ const sessions = new Map();
 // ─── Sesi ────────────────────────────────────────────────────────────────────
 const kunciSesi = (ctx) => `${ctx.botData?.id ?? '?'}:${ctx.jid}:${ctx.sender}`;
 
-function setSesi(ctx, data) {
-  const key = kunciSesi(ctx);
+function setSesi(ctx, data, kunciPaksa = null) {
+  const key = kunciPaksa || kunciSesi(ctx);
   const lama = sessions.get(key);
   if (lama?.timer) clearTimeout(lama.timer);
-  const sesi = { ...data, expiresAt: Date.now() + SESSION_TTL, timer: null };
+  const sesi = {
+    ...data,
+    kunci: key,
+    pembuat: ctx.sender,          // hanya pembuat ini (plus owner/admin/dev) yang boleh menggerakkan sesi
+    dibuatAt: Date.now(),
+    expiresAt: Date.now() + SESSION_TTL,
+    timer: null,
+  };
   sesi.timer = setTimeout(() => {
     if (sessions.get(key) === sesi) sessions.delete(key);
   }, SESSION_TTL);
@@ -93,6 +100,27 @@ function getSesi(ctx) {
     return null;
   }
   return sesi;
+}
+
+// Sesi terbaru di chat yang sama, apa pun pengirimnya. Dipakai owner/admin grup
+// supaya masih bisa menjawab `1`/`0` kalau yang membuat sesi sedang tidak aktif.
+// Orang lain tidak akan pernah sampai ke sini (lihat `istimewa` di handler).
+function sesiTerbaruDiChat(ctx) {
+  const awalan = `${ctx.botData?.id ?? '?'}:${ctx.jid}:`;
+  const sekarang = Date.now();
+  let terbaru = null;
+  for (const [key, sesi] of sessions) {
+    if (!key.startsWith(awalan)) continue;      // bot lain / chat lain
+    if (sekarang > sesi.expiresAt) continue;    // sudah kedaluwarsa
+    if (!terbaru || (sesi.dibuatAt || 0) > (terbaru.dibuatAt || 0)) terbaru = sesi;
+  }
+  return terbaru;
+}
+
+function hapusSesiObj(sesi) {
+  if (!sesi) return;
+  if (sesi.timer) clearTimeout(sesi.timer);
+  if (sesi.kunci) sessions.delete(sesi.kunci);
 }
 
 function hapusSesi(ctx) {
@@ -375,10 +403,18 @@ module.exports = async function audioStickerHandler(ctx) {
     && FLAG_AUDIO.has(String(args?.[0] || '').toLowerCase());
   const perintahUtama = isCmd && (COMMANDS.has(command) || lewatFlag);
 
-  const sesi = getSesi(ctx);
+  // Siapa yang boleh menggerakkan sesi: pembuat stiker itu sendiri, owner bot,
+  // admin grup, atau dev. Orang asing di grup yang sama TIDAK bisa menunggangi
+  // sesi orang lain — kunci sesi memang sudah per pengirim, ini pengaman kedua
+  // sekaligus jalur akses buat owner/admin (mis. admin yang mengawasi grup).
+  const istimewa = Boolean(ctx.isOwner || ctx.isAdmin || ctx.isDev);
+  const sesiMilik = getSesi(ctx);
+  const sesi = sesiMilik || (istimewa ? sesiTerbaruDiChat(ctx) : null);
 
   // ── Balasan sesi: `1`/`0` atau media susulan (bukan command) ───────────────
   if (!isCmd && sesi) {
+    if (!istimewa && sesi.pembuat && ctx.sender !== sesi.pembuat) return false;
+
     const teks = String(ctx.body || '').trim().toLowerCase();
 
     if (sesi.stage === 'pilihVideo') {
@@ -393,11 +429,11 @@ module.exports = async function audioStickerHandler(ctx) {
         try {
           const gambar = sesi.image || await ambilFrame();
           const res = await kirimAudioSticker(ctx, gambar, sesi.video);
-          hapusSesi(ctx);
+          hapusSesiObj(sesi);
           await react(mess.reactSuccess).catch(() => {});
           await reply(`${kabarSukses(res)}\n_Video jadi stiker audio._`);
         } catch (e) {
-          hapusSesi(ctx);
+          hapusSesiObj(sesi);
           console.error('[ASTICKER] gagal (video jadi audio sticker):', e?.stack || e?.message || e);
           await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
         }
@@ -407,10 +443,10 @@ module.exports = async function audioStickerHandler(ctx) {
       if (teks === '0' || /^(no|tidak|nggak|gak)$/.test(teks)) {
         try {
           const gambar = sesi.image || await ambilFrame();
-          setSesi(ctx, { stage: 'audio', image: gambar });
+          setSesi(ctx, { stage: 'audio', image: gambar }, sesi.kunci);
           await reply('Oke, kirim *audio/voice note* custom yang mau dipakai.');
         } catch (e) {
-          hapusSesi(ctx);
+          hapusSesiObj(sesi);
           console.error('[ASTICKER] gagal ambil frame video:', e?.stack || e?.message || e);
           await reply(`❌ Gagal mengambil frame video: ${rapikanError(e)}`);
         }
@@ -432,11 +468,11 @@ module.exports = async function audioStickerHandler(ctx) {
     if (gambar && (audio || video)) {
       try {
         const res = await kirimAudioSticker(ctx, gambar, audio || video);
-        hapusSesi(ctx);
+        hapusSesiObj(sesi);
         await react(mess.reactSuccess).catch(() => {});
         await reply(kabarSukses(res));
       } catch (e) {
-        hapusSesi(ctx);
+        hapusSesiObj(sesi);
         console.error('[ASTICKER] gagal (media susulan):', e?.stack || e?.message || e);
         await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
       }
@@ -444,18 +480,18 @@ module.exports = async function audioStickerHandler(ctx) {
     }
 
     if (video && !gambar) {
-      setSesi(ctx, { stage: 'pilihVideo', video });
+      setSesi(ctx, { stage: 'pilihVideo', video }, sesi.kunci);
       await reply('🎬 Sumbernya video. Ketik `1` (video jadi audio sticker) atau `0` (audio custom).');
       return true;
     }
 
     if (gambar) {
-      setSesi(ctx, { stage: 'audio', image: gambar });
+      setSesi(ctx, { stage: 'audio', image: gambar }, sesi.kunci);
       await reply('🖼️ Gambar/stiker tersimpan. Sekarang kirim *audio/voice note*-nya.');
       return true;
     }
 
-    setSesi(ctx, { stage: 'image', ...(audio ? { audio } : {}), ...(video ? { video } : {}) });
+    setSesi(ctx, { stage: 'image', ...(audio ? { audio } : {}), ...(video ? { video } : {}) }, sesi.kunci);
     await reply('🔊 Audio tersimpan. Sekarang kirim *gambar/stiker*-nya.');
     return true;
   }
