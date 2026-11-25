@@ -6,7 +6,7 @@
  * pesan stickerMessage yang membawa StickerMessage.audioMessage.
  *
  * Command:
- *   .as  (alias: .audiosticker .asticker .stikeraudio .stickeraudio .saudio)
+ *   .sa  (alias: .audiosticker .asticker .stikeraudio .stickeraudio .saudio)
  *   .s -audio / .sticker -audio
  *
  * Bentuk payload yang dirender WA:
@@ -19,9 +19,9 @@
  * jalan, tapi hasilnya stiker polos kalau syaratnya tidak terpenuhi.
  *
  * Alur pemakaian:
- *   1) Reply audio/voice note, kirim gambar/stiker + caption `.as`
- *   2) Reply gambar/stiker, kirim audio/voice note + caption `.as`
- *   3) Kirim video + caption `.as` -> bot tanya `1` (audio video) / `0` (audio custom)
+ *   1) Reply audio/voice note, kirim gambar/stiker + caption `.sa`
+ *   2) Reply gambar/stiker, kirim audio/voice note + caption `.sa`
+ *   3) Kirim video + caption `.sa` -> bot tanya `1` (audio video) / `0` (audio custom)
  */
 
 const fs    = require('fs');
@@ -36,11 +36,11 @@ const mess             = require('../../config/mess');
 const { rapikanError } = require('../../engine/pesanError');
 const { addStickerExif } = require('../../engine/sticker');
 
-const COMMANDS     = new Set(['as', 'audiosticker', 'asticker', 'stikeraudio', 'stickeraudio', 'saudio']);
+const COMMANDS     = new Set(['sa', 'audiosticker', 'asticker', 'stikeraudio', 'stickeraudio', 'saudio']);
 const FLAG_AUDIO   = new Set(['-audio', '--audio', '-a']);
 // documentMessage ikut: audio yang dikirim sebagai FILE (mp3/m4a/opus), bukan
 // voice note, datang sebagai documentMessage. Dulu tidak masuk daftar ini, jadi
-// `.as` dengan file mp3 diam saja (laporan 2026-11-25). Ditaruh paling belakang
+// `.sa` dengan file mp3 diam saja (laporan 2026-11-25). Ditaruh paling belakang
 // supaya tipe yang lebih spesifik tetap diprioritaskan.
 const TIPE_MEDIA   = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage', 'documentMessage'];
 const SESSION_TTL  = 5 * 60 * 1000;
@@ -426,9 +426,9 @@ async function kirimAudioSticker(ctx, sumberGambar, sumberAudio) {
 const caraPakai = (p) =>
   `*🔊 Audio Sticker*\n\n` +
   `Gabungkan *gambar/stiker* dengan *audio/voice note* jadi satu audio sticker.\n\n` +
-  `> Reply audio/voice note, kirim gambar/stiker + caption \`${p}as\`\n` +
-  `> Reply gambar/stiker, kirim audio/voice note + caption \`${p}as\`\n` +
-  `> Kirim video + caption \`${p}as\`, lalu pilih:\n` +
+  `> Reply audio/voice note, kirim gambar/stiker + caption \`${p}sa\`\n` +
+  `> Reply gambar/stiker, kirim audio/voice note + caption \`${p}sa\`\n` +
+  `> Kirim video + caption \`${p}sa\`, lalu pilih:\n` +
   `> \`1\` = video langsung jadi audio sticker (stiker bergerak + audio video)\n` +
   `> \`0\` = stiker bergerak dari video + audio custom\n\n` +
   `Bisa juga lewat \`${p}s -audio\` atau \`${p}saudio\`.`;
