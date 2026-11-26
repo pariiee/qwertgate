@@ -654,15 +654,27 @@ module.exports = async function groupHandler(ctx) {
     }
 
     // ── acc — setujui permintaan gabung grup ─────────────────────────────────
-    // `.acc` = lihat siapa saja yang menunggu, `.acc all` = setujui semuanya.
+    // `.acc` = lihat siapa saja yang menunggu (urut terbaru dulu).
+    // `.acc 10` = setujui 10 permintaan TERBARU — bukan yang paling lama
+    //   menunggu, supaya yang baru minta gabung tidak ikut mengantre di
+    //   belakang tumpukan lama. `.acc all` = setujui semuanya.
     // Wajib admin grup DAN bot harus admin: WhatsApp menolak approve tanpa itu.
     case 'acc':
     case 'accall': {
       if (!await isBotAdmin()) { await reply(mess.BotAdmin); return true; }
       if (!await isAdmin()) { await reply(mess.GrupAdmin); return true; }
 
+      const arg0 = String(args?.[0] || '').toLowerCase();
       const setujuSemua = command === 'accall'
-        || ['all', 'semua', 'ya', 'yes'].includes(String(args?.[0] || '').toLowerCase());
+        || ['all', 'semua', 'ya', 'yes'].includes(arg0);
+      const minta = /^\d+$/.test(arg0) && Number(arg0) > 0 ? Number(arg0) : 0;
+      if (arg0 && !setujuSemua && !minta) {
+        await reply(`Penggunaan: *${p}acc [jumlah|all]*\n\n`
+          + `• *${p}acc* — lihat daftar yang menunggu\n`
+          + `• *${p}acc 10* — setujui 10 permintaan terbaru\n`
+          + `• *${p}acc all* — setujui semuanya`);
+        return true;
+      }
 
       try {
         const daftar = await client.group.queryMembershipApprovalRequests(jid);
@@ -671,18 +683,28 @@ module.exports = async function groupHandler(ctx) {
           return true;
         }
 
-        const cuplik = daftar.slice(0, 30).map((r, i) =>
+        // Terbaru dulu. `waktu` = `request_time` dari WhatsApp; kalau kosong
+        // semua (0), daftar WA dianggap urut lama→baru jadi dibalik.
+        const adaWaktu = daftar.some((r) => (r.waktu || 0) > 0);
+        const urut = adaWaktu
+          ? [...daftar].sort((a, b) => (b.waktu || 0) - (a.waktu || 0))
+          : [...daftar].reverse();
+        const cuplik = urut.slice(0, 30).map((r, i) =>
           `${i + 1}. +${r.nomor || String(r.jid).split('@')[0].split(':')[0]}${r.nama ? ` (${r.nama})` : ''}`);
-        const sisa = daftar.length > cuplik.length ? `\n… dan ${daftar.length - cuplik.length} lainnya` : '';
+        const sisaTampil = urut.length > cuplik.length ? `\n… dan ${urut.length - cuplik.length} lainnya` : '';
 
-        if (!setujuSemua) {
-          await reply(`📋 *${daftar.length} permintaan gabung* menunggu:\n\n${cuplik.join('\n')}${sisa}`
-            + `\n\nSetujui semua: *${p}acc all*`);
+        if (!setujuSemua && !minta) {
+          await reply(`📋 *${daftar.length} permintaan gabung* menunggu (terbaru dulu):\n\n${cuplik.join('\n')}${sisaTampil}`
+            + `\n\nSetujui 10 terbaru: *${p}acc 10*`
+            + `\nSetujui semua: *${p}acc all*`);
           return true;
         }
 
-        await client.group.approveMembershipRequests(jid, daftar.map((r) => r.jid));
-        await reply(`✅ *${daftar.length} permintaan gabung* disetujui.${sisa ? '' : `\n\n${cuplik.join('\n')}`}`);
+        const pilih = setujuSemua ? daftar : urut.slice(0, minta);
+        await client.group.approveMembershipRequests(jid, pilih.map((r) => r.jid));
+        const sisa = daftar.length - pilih.length;
+        await reply(`✅ *${pilih.length} permintaan gabung* disetujui${setujuSemua ? '' : ' (yang terbaru dulu)'}.`
+          + (sisa > 0 ? `\nMasih ada *${sisa}* menunggu — lihat *${p}acc*.` : ''));
       } catch (e) {
         await reply(`❌ Gagal memproses permintaan gabung: ${rapikanError(e)}`);
       }
