@@ -892,6 +892,17 @@ module.exports = async function ownerHandler(ctx) {
             `📅 Expired: ${expDate.toLocaleString('id-ID')}`
           );
         } catch (e) {
+          const msg = String(e?.message || e);
+          if (msg.includes("expected <group> node")) {
+            await reply(
+              `⏳ *Permintaan bergabung terkirim.*\n\n` +
+              `Grup ini mewajibkan persetujuan admin, jadi bot menunggu di-acc.\n` +
+              `Setelah admin menyetujui dan bot masuk grup, jalankan:\n` +
+              `${p}addsewa <jid_grup> ${durStr}\n\n` +
+              `_Contoh jid: 120363418054099388@g.us_`
+            );
+            return true;
+          }
           await reply(`❌ Gagal join grup: ${rapikanError(e)}\n\nPastikan link valid dan bot belum ada di grup.`);
         }
         return true;
