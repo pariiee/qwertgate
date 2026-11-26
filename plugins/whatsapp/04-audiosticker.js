@@ -227,6 +227,37 @@ async function kumpulkanSumber(ctx) {
   return out;
 }
 
+// ─── Antrean konversi ────────────────────────────────────────────────────────
+// `.sa` itu kerjaan berat (ffmpeg + WebP animasi). Di server ini (3 core) 4-5
+// member barengan bikin SEMUA permintaan jadi lambat, jadi konversi dibatasi
+// MAKS_BERSAMAAN sekaligus dan sisanya antre. Bisa diubah lewat env
+// `SA_MAKS_BERSAMAAN` tanpa deploy.
+const MAKS_BERSAMAAN = Math.max(1, Number(process.env.SA_MAKS_BERSAMAAN || 2));
+let sedangJalan = 0;
+const antrean = [];
+
+function lewatAntrean(tugas, saatAntre) {
+  return new Promise((resolve, reject) => {
+    const jalankan = () => {
+      sedangJalan += 1;
+      Promise.resolve()
+        .then(tugas)
+        .then(resolve, reject)
+        .finally(() => {
+          sedangJalan -= 1;
+          const lanjut = antrean.shift();
+          if (lanjut) lanjut.jalankan();
+        });
+    };
+    if (sedangJalan < MAKS_BERSAMAAN) jalankan();
+    else {
+      const posisi = antrean.length + 1;
+      antrean.push({ jalankan });
+      saatAntre?.(posisi);
+    }
+  });
+}
+
 // ─── ffmpeg ──────────────────────────────────────────────────────────────────
 // Ambil bagian stderr yang berguna buat pesan error. `slice(-200)` mentah bikin
 // pesan nyasar: di `-v info` baris terakhir bisa cuma progres ("size=… time=…"),
@@ -243,11 +274,20 @@ function ffmpegPipe(args, input) {
     const p = spawn('ffmpeg', args);
     const out = [];
     let err = '';
+    // Pengaman antrean: kalau ffmpeg menggantung, slot antrean tidak boleh
+    // dipegang selamanya (dulu sebelum ada antrean, hang cuma bikin satu
+    // permintaan nyangkut; sekarang efeknya lebih besar).
+    const jam = setTimeout(() => {
+      try { p.kill('SIGKILL'); } catch { /* sudah mati */ }
+      reject(new Error('ffmpeg kelamaan (>90 detik), proses dihentikan'));
+    }, 90 * 1000);
+    jam.unref?.();
     p.stdout.on('data', (d) => out.push(d));
     p.stderr.on('data', (d) => { err += d; });
-    p.on('error', reject);
+    p.on('error', (e) => { clearTimeout(jam); reject(e); });
     p.stdin.on('error', () => {});
     p.on('close', (code) => {
+      clearTimeout(jam);
       if (code !== 0) return reject(new Error(`ffmpeg gagal: ${pesanFfmpeg(err)}`));
       resolve({ buf: Buffer.concat(out), err });
     });
@@ -268,6 +308,24 @@ function punyaJalurAudio(input) {
     p.stdout.on('data', (d) => { out += d; });
     p.on('error', () => resolve(true));     // ffprobe hilang? jangan blokir user
     p.on('close', () => resolve(/audio/i.test(out)));
+    p.stdin.on('error', () => {});
+    p.stdin.end(input);
+  });
+}
+
+// Durasi (detik) sumber video. Dipakai buat memilih titik awal tangga encode.
+// Gagal baca (mis. ffprobe tidak bisa men-seek) -> 0, artinya diperlakukan
+// seperti video pendek (perilaku lama).
+function durasiDetik(input) {
+  return new Promise((resolve) => {
+    let p;
+    try {
+      p = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', 'pipe:0']);
+    } catch { resolve(0); return; }
+    let out = '';
+    p.stdout.on('data', (d) => { out += d; });
+    p.on('error', () => resolve(0));
+    p.on('close', () => resolve(Number(String(out).trim()) || 0));
     p.stdin.on('error', () => {});
     p.stdin.end(input);
   });
@@ -380,14 +438,22 @@ async function frameKeWebp(video) {
 // Terukur: video 17 dtk 720x1280 → 512px fps15 q70 = ~316 KB. Jadi jalur normal
 // (tahap pertama) hampir selalu cukup; tahap berikutnya cuma jaring pengaman
 // untuk video panjang.
+// Ambang 5 detik: video agak panjang sering tidak cukup di fps15 q70 sehingga
+// diulang-ulang (data produksi: 271 percobaan encode untuk 446 perintah `.sa`,
+// CPU terbuang). Video >5 detik langsung mulai di fps12 q60 — satu kali encode,
+// hasil tetap 512px dan <900 KB. Video pendek tetap fps15 q70 (paling halus).
 const BATAS_ANIMASI = 900 * 1024;
+const AMBANG_VIDEO_PANJANG = 5;
 async function videoKeWebpAnimasi(video) {
   const tahap = [
     { detik: 0, fps: 15, q: 70 },
+    { detik: 0, fps: 12, q: 60 },
     { detik: 8, fps: 12, q: 60 },
     { detik: 5, fps: 10, q: 50 },
   ];
-  for (const t of tahap) {
+  const durasi = await durasiDetik(video);
+  const mulai = durasi > AMBANG_VIDEO_PANJANG ? 1 : 0;
+  for (const t of tahap.slice(mulai)) {
     const args = ['-v', 'error', '-i', 'pipe:0'];
     if (t.detik) args.push('-t', String(t.detik));
     args.push(
@@ -397,7 +463,7 @@ async function videoKeWebpAnimasi(video) {
     );
     const { buf } = await ffmpegPipe(args, video);
     if (buf.length <= BATAS_ANIMASI) return buf;
-    console.warn(`[ASTICKER] webp animasi ${(buf.length / 1048576).toFixed(1)} MB (fps ${t.fps}, q ${t.q}) — coba setting lebih kecil`);
+    console.warn(`[ASTICKER] webp animasi ${(buf.length / 1048576).toFixed(1)} MB (fps ${t.fps}, q ${t.q}, durasi ${durasi.toFixed(1)} dtk) — coba setting lebih kecil`);
   }
   // Masih kegedean (video panjang banget): turun ke satu frame supaya tetap kirim.
   console.warn('[ASTICKER] webp animasi tetap kegedean — turun ke satu frame');
@@ -425,7 +491,19 @@ async function keWebp(src) {
 }
 
 // ─── Kirim audio sticker ─────────────────────────────────────────────────────
+// Pembungkus: batasi berapa konversi yang jalan barengan (lihat lewatAntrean).
+// Nomor antrean dihitung SAAT masuk antrean (bukan sebelumnya) supaya dua
+// permintaan yang datang nyaris bersamaan tidak dapat nomor yang sama.
 async function kirimAudioSticker(ctx, sumberGambar, sumberAudio) {
+  return lewatAntrean(
+    () => bikinAudioSticker(ctx, sumberGambar, sumberAudio),
+    (posisi) => ctx
+      .reply(`⏳ Sedang ada proses lain — permintaanmu di antrean ke-${posisi}. Stikernya menyusul ya.`)
+      .catch(() => {}),
+  );
+}
+
+async function bikinAudioSticker(ctx, sumberGambar, sumberAudio) {
   const { client, jid } = ctx;
 
   const webpBersih = await keWebp(sumberGambar);
