@@ -17,8 +17,10 @@
  * diverifikasi ada di versi terpasang (lihat komentar di engine/zapo/client.js
  * dan references/porting-baileys-features.md).
  *
- * TIDAK didukung: wallpaper foto. Referensinya mengunggah gambar ke endpoint
- * khusus WhatsApp (`/mms/chat-wallpaper-image/...`) yang zapo tidak punya.
+ * Wallpaper foto (eksperimen 2026-11-26): payload `ChatThemeSetting.customImage`
+ * ADA di proto zapo, tapi tipe unggah `chat-wallpaper-image` TIDAK ada di tabel
+ * zapo 1.12.1 — plugin ini menambal tabelnya saat runtime (fallback ke
+ * `/mms/image` kalau gagal). Belum terbukti diterima semua klien WhatsApp.
  *
  * Gerbang akses: cuma di grup, dan cuma admin grup (atau owner/dev bot).
  */
@@ -26,7 +28,7 @@
 const { proto } = require('zapo-js');
 const mess = require('../../config/mess');
 
-const COMMANDS = new Set(['tema', 'settema', 'theme', 'temagc']);
+const COMMANDS = new Set(['tema', 'settema', 'theme', 'temagc', 'temafoto', 'temagambar', 'wallpaper']);
 
 const WARNA_CEPAT = {
   pink: 'ff69b4',
@@ -90,6 +92,88 @@ const payloadTema = ({ hex, reset }) => {
   return Buffer.from(proto.Message.ChatThemeSetting.encode(isi).finish());
 };
 
+// ── Wallpaper foto ───────────────────────────────────────────────────────────
+// zapo 1.12.1 belum punya tipe unggah `chat-wallpaper-image`, padahal foto
+// wallpaper harus diunggah dulu baru direferensikan di ChatThemeSetting.
+// Tambal tabelnya lewat require path absolut (lewati exports map paket).
+let TABEL_WALLPAPER = null;
+function tambalTabelUploadWallpaper() {
+  if (TABEL_WALLPAPER !== null) return TABEL_WALLPAPER;
+  try {
+    const path = require('path');
+    const akar = path.dirname(require.resolve('zapo-js'));      // .../zapo-js/dist
+    const konst = require(path.join(akar, 'media', 'constants.js'));
+    if (!konst.MEDIA_UPLOAD_PATHS['chat-wallpaper-image']) {
+      konst.MEDIA_UPLOAD_PATHS = Object.assign({}, konst.MEDIA_UPLOAD_PATHS, {
+        'chat-wallpaper-image': '/mms/chat-wallpaper-image',
+      });
+    }
+    TABEL_WALLPAPER = true;
+  } catch (e) {
+    console.warn('[TEMA] tabel upload wallpaper tidak bisa ditambal:', e?.message || e);
+    TABEL_WALLPAPER = false;
+  }
+  return TABEL_WALLPAPER;
+}
+
+/** Isi media dari hasil `prepareMedia` (key-nya ikut jenis upload). */
+const ambilMedia = (hasil) => hasil?.imageMessage
+  || (hasil && Object.values(hasil).find((v) => v && v.directPath))
+  || null;
+
+/** Foto dari pesan ini atau dari pesan yang di-reply. */
+async function gambarDariPesan(ctx) {
+  const raw = ctx.msg?.message || {};
+  const kutip = raw.extendedTextMessage?.contextInfo?.quotedMessage
+    || raw.imageMessage?.contextInfo?.quotedMessage
+    || raw.videoMessage?.contextInfo?.quotedMessage
+    || null;
+  for (const wadah of [raw, kutip].filter(Boolean)) {
+    for (const tipe of ['imageMessage', 'stickerMessage']) {
+      const isi = wadah[tipe];
+      if (!isi) continue;
+      try {
+        const buf = Buffer.from(await ctx.client.message.downloadBytes({ [tipe]: isi }));
+        if (buf?.length) return buf;
+      } catch (e) {
+        console.warn(`[TEMA] gagal unduh ${tipe}: ${e?.message || e}`);
+      }
+    }
+  }
+  return null;
+}
+
+/** Foto dari link (dipakai `.temafoto <url>`). */
+async function gambarDariUrl(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+  if (!res.ok) throw new Error(`link gambar balas HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (!buf.length) throw new Error('gambar dari link kosong');
+  if (buf.length > 8 * 1024 * 1024) throw new Error('gambar terlalu besar (maks 8 MB)');
+  return buf;
+}
+
+/** Wallpaper sebaiknya JPEG, bukan WebP/sticker. */
+async function jadikanJpeg(buf) {
+  const sharp = require('sharp');
+  return sharp(buf).resize({ width: 1080, height: 1920, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 88 }).toBuffer();
+}
+
+/** Payload ChatThemeSetting berisi wallpaper foto. */
+function payloadWallpaper(media) {
+  return Buffer.from(proto.Message.ChatThemeSetting.encode({
+    settingTimestampMs: Date.now(),
+    customImage: {
+      directPath: media.directPath,
+      mediaKey: media.mediaKey,
+      fileSha256: media.fileSha256,
+      fileEncSha256: media.fileEncSha256,
+      dimLevel: 0,
+    },
+  }).finish());
+}
+
 const telanjang = (j) => String(j || '').split(':')[0].split('@')[0];
 
 /** Peserta grup yang cocok dengan salah satu identitas (nomor/LID). */
@@ -107,7 +191,8 @@ const caraPakai = (p) =>
   + `• Warna cepat: \`${p}tema pink\`\n`
   + `  _(pink, biru, ungu, hitam, hijau, merah, kuning, oren, putih)_\n`
   + `• Warna kode hex: \`${p}tema #ff69b4\`\n`
-  + `• Balikin ke bawaan: \`${p}tema reset\`\n\n`
+  + `• Balikin ke bawaan: \`${p}tema reset\`\n`
+  + `• Wallpaper foto: \`${p}temafoto\` (kirim/reply foto) atau \`${p}temafoto <link gambar>\`\n\n`
   + '_Cuma admin grup (atau owner bot) yang bisa ganti._';
 
 module.exports = async function (ctx) {
@@ -154,6 +239,52 @@ module.exports = async function (ctx) {
   }
 
   const q = args.join(' ').trim();
+
+  // ── Wallpaper foto ────────────────────────────────────────────────────────
+  const urlFoto = /^https?:\/\/\S+$/i.test(q) ? q : null;
+  const mauWallpaper = ['temafoto', 'temagambar', 'wallpaper'].includes(String(command || '').toLowerCase())
+    || Boolean(urlFoto);
+
+  if (mauWallpaper) {
+    await react(mess.reactLoading).catch(() => {});
+    try {
+      const mentah = urlFoto ? await gambarDariUrl(urlFoto) : await gambarDariPesan(ctx);
+      if (!mentah) {
+        await react(mess.reactError).catch(() => {});
+        await reply('❌ Fotonya belum ada. Kirim/reply *foto* + `temafoto` atau pakai `temafoto <link gambar>`.');
+        return true;
+      }
+      const jpeg = await jadikanJpeg(mentah);
+
+      let media = null;
+      let jalur = 'chat-wallpaper-image';
+      if (tambalTabelUploadWallpaper()) {
+        try {
+          media = ambilMedia(await client.message.prepareMedia(jpeg, { type: jalur, mimetype: 'image/jpeg' }));
+        } catch (e) {
+          console.warn('[TEMA] unggah ke jalur wallpaper gagal, coba /mms/image:', e?.message || e);
+        }
+      }
+      if (!media) {
+        jalur = 'image';
+        media = ambilMedia(await client.message.prepareMedia(jpeg, { type: 'image', mimetype: 'image/jpeg' }));
+      }
+      if (!media?.directPath) throw new Error('unggah wallpaper gagal (directPath kosong)');
+
+      await client.message.kirimPesanGrupMentah(jid, bungkusTema(payloadWallpaper(media)), { mediatype: 'chat_theme' });
+      console.log(`[TEMA] wallpaper foto terkirim (jalur unggah: ${jalur}, ${(jpeg.length / 1024).toFixed(0)} KB)`);
+
+      await react(mess.reactSuccess).catch(() => {});
+      await reply('✅ Wallpaper grup diganti dari foto.\n'
+        + '_Kalau belum kelihatan di HP, buka ulang grupnya (atau kirim satu pesan biasa di grup ini lalu ulangi)._');
+    } catch (e) {
+      console.error('[TEMA] gagal wallpaper:', e?.stack || e?.message || e);
+      await react(mess.reactError).catch(() => {});
+      await reply(`❌ Gagal ganti wallpaper:\n${e?.message || e}`);
+    }
+    return true;
+  }
+
   const preset = WARNA_CEPAT[q.toLowerCase()];
   const hex = preset || (/^#?[0-9a-f]{6}$/i.test(q) ? q.replace('#', '').toLowerCase() : null);
   const reset = /^(reset|hapus|clear|bawaan|default)$/i.test(q);
