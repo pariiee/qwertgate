@@ -35,6 +35,7 @@ const { proto } = require('zapo-js');
 const mess             = require('../../config/mess');
 const { rapikanError } = require('../../engine/pesanError');
 const { addStickerExif } = require('../../engine/sticker');
+const antrianPrompt    = require('../../engine/antrianPrompt');
 
 const COMMANDS     = new Set(['sa', 'audiosticker', 'asticker', 'stikeraudio', 'stickeraudio', 'saudio']);
 const FLAG_AUDIO   = new Set(['-audio', '--audio', '-a']);
@@ -91,6 +92,18 @@ function setSesi(ctx, data, kunciPaksa = null) {
   }, SESSION_TTL);
   sesi.timer.unref?.();
   sessions.set(key, sesi);
+
+  // Daftarkan ke engine supaya balasan `1`/`0` (dan media susulan) dicek LEBIH DULU,
+  // sebelum plugin lain jalan — `00-game.js` menelan semua teks non-perintah
+  // selama ada game aktif, jadi tanpa ini balasan `.sa` bisa ikut hilang.
+  // Upsert per chat: aman dipanggil tiap setSesi, entri lama otomatis kedaluwarsa.
+  antrianPrompt.pasang({
+    botId: ctx.botData?.id,
+    jid: ctx.jid,
+    ttlMs: SESSION_TTL,
+    jawab: (c) => prosesBalasanSesi(c),
+  });
+
   return sesi;
 }
 
@@ -482,6 +495,116 @@ const kabarSukses = (res) =>
   (res.seconds ? ` · ⏱ ${res.seconds} detik` : '');
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
+/**
+ * Proses pesan yang merupakan balasan sesi `.sa` (`1`/`0` atau media susulan).
+ *
+ * Dipakai dua jalur:
+ *   (a) engine lewat `engine/antrianPrompt.js` — dicek SEBELUM dispatch plugin,
+ *       supaya balasan `1`/`0` menang atas `00-game.js` (game aktif menelan
+ *       semua teks non-perintah);
+ *   (b) jalur lama di handler — fallback kalau entri antrian sudah hilang.
+ *
+ * Balikin true kalau pesannya memang dipakai sesi; false = biarkan chat biasa.
+ */
+async function prosesBalasanSesi(ctx) {
+  if (ctx.isCmd) return false;
+
+  const { reply, react } = ctx;
+  const istimewa = Boolean(ctx.isOwner || ctx.isAdmin || ctx.isDev);
+  const sesi = getSesi(ctx) || (istimewa ? sesiTerbaruDiChat(ctx) : null);
+  if (!sesi) return false;
+  if (!istimewa && sesi.pembuat && ctx.sender !== sesi.pembuat) return false;
+
+  const teks = String(ctx.body || '').trim().toLowerCase();
+
+  if (sesi.stage === 'pilihVideo') {
+    // Visual = VIDEONYA (nanti jadi webp animasi di keWebp), bukan satu frame.
+    const ambilGambar = async () => ({
+      buffer: sesi.video.buffer,
+      kind: 'video',
+      type: 'videoMessage',
+      mime: sesi.video.mime || 'video/mp4',
+    });
+
+    if (teks === '1' || /^(ya|yes|iy(a|e))$/.test(teks)) {
+      // Tanda "sedang diproses" — dulu cuma ada ✅ di akhir, jadi user tidak tahu
+      // jawabannya diterima atau ditolak sampai stikernya muncul.
+      await react(mess.reactLoading).catch(() => {});
+      try {
+        const gambar = sesi.image || await ambilGambar();
+        const res = await kirimAudioSticker(ctx, gambar, sesi.video);
+        hapusSesiObj(sesi);
+        await react(mess.reactSuccess).catch(() => {});
+        const sisa = sesiLainDiChat(ctx, sesi);
+        await reply(`${kabarSukses(res)}\n_Video jadi stiker audio._`
+          + (sisa ? `\n\ni️ Masih ada *${sisa}* permintaan lain menunggu di chat ini — balas \`1\` lagi untuk memprosesnya.` : ''));
+      } catch (e) {
+        hapusSesiObj(sesi);
+        console.error('[ASTICKER] gagal (video jadi audio sticker):', e?.stack || e?.message || e);
+        await react(mess.reactError).catch(() => {});
+        await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
+      }
+      return true;
+    }
+
+    if (teks === '0' || /^(no|tidak|nggak|gak)$/.test(teks)) {
+      try {
+        const gambar = sesi.image || await ambilGambar();
+        setSesi(ctx, { stage: 'audio', image: gambar }, sesi.kunci);
+        await reply('Oke, kirim *audio/voice note* custom yang mau dipakai.');
+      } catch (e) {
+        hapusSesiObj(sesi);
+        console.error('[ASTICKER] gagal ambil frame video:', e?.stack || e?.message || e);
+        await reply(`❌ Gagal mengambil frame video: ${rapikanError(e)}`);
+      }
+      return true;
+    }
+
+    await reply('Balas `1` (video jadi audio sticker) atau `0` (audio custom).');
+    return true;
+  }
+
+  // stage 'audio' / 'image': tunggu media yang kurang
+  const sumber = await kumpulkanSumber(ctx);
+  if (!sumber.length) return false; // biarkan chat biasa jalan
+
+  const gambar = sesi.image || sumber.find((s) => s.kind === 'image');
+  const audio  = sesi.audio || sumber.find((s) => s.kind === 'audio');
+  const video  = sesi.video || sumber.find((s) => s.kind === 'video');
+
+  if (gambar && (audio || video)) {
+    await react(mess.reactLoading).catch(() => {});
+    try {
+      const res = await kirimAudioSticker(ctx, gambar, audio || video);
+      hapusSesiObj(sesi);
+      await react(mess.reactSuccess).catch(() => {});
+      await reply(kabarSukses(res));
+    } catch (e) {
+      hapusSesiObj(sesi);
+      console.error('[ASTICKER] gagal (media susulan):', e?.stack || e?.message || e);
+      await react(mess.reactError).catch(() => {});
+      await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
+    }
+    return true;
+  }
+
+  if (video && !gambar) {
+    setSesi(ctx, { stage: 'pilihVideo', video }, sesi.kunci);
+    await reply('🎬 Sumbernya video. Ketik `1` (video jadi audio sticker) atau `0` (audio custom).');
+    return true;
+  }
+
+  if (gambar) {
+    setSesi(ctx, { stage: 'audio', image: gambar }, sesi.kunci);
+    await reply('🖼️ Gambar/stiker tersimpan. Sekarang kirim *audio/voice note*-nya.');
+    return true;
+  }
+
+  setSesi(ctx, { stage: 'image', ...(audio ? { audio } : {}), ...(video ? { video } : {}) }, sesi.kunci);
+  await reply('🔊 Audio tersimpan. Sekarang kirim *gambar/stiker*-nya.');
+  return true;
+}
+
 module.exports = async function audioStickerHandler(ctx) {
   const { isCmd, command, args, botData, reply, react, jid, client } = ctx;
   const p = botData?.prefix ?? '.';
@@ -499,98 +622,11 @@ module.exports = async function audioStickerHandler(ctx) {
   const sesi = sesiMilik || (istimewa ? sesiTerbaruDiChat(ctx) : null);
 
   // ── Balasan sesi: `1`/`0` atau media susulan (bukan command) ───────────────
-  if (!isCmd && sesi) {
-    if (!istimewa && sesi.pembuat && ctx.sender !== sesi.pembuat) return false;
-
-    const teks = String(ctx.body || '').trim().toLowerCase();
-
-    if (sesi.stage === 'pilihVideo') {
-      // Visual = VIDEONYA (nanti jadi webp animasi di keWebp), bukan satu frame.
-      const ambilGambar = async () => ({
-        buffer: sesi.video.buffer,
-        kind: 'video',
-        type: 'videoMessage',
-        mime: sesi.video.mime || 'video/mp4',
-      });
-
-      if (teks === '1' || /^(ya|yes|iy(a|e))$/.test(teks)) {
-        // Tanda "sedang diproses" — dulu cuma ada ✅ di akhir, jadi user tidak tahu
-        // jawabannya diterima atau ditolak sampai stikernya muncul.
-        await react(mess.reactLoading).catch(() => {});
-        try {
-          const gambar = sesi.image || await ambilGambar();
-          const res = await kirimAudioSticker(ctx, gambar, sesi.video);
-          hapusSesiObj(sesi);
-          await react(mess.reactSuccess).catch(() => {});
-          const sisa = sesiLainDiChat(ctx, sesi);
-          await reply(`${kabarSukses(res)}\n_Video jadi stiker audio._`
-            + (sisa ? `\n\nℹ️ Masih ada *${sisa}* permintaan lain menunggu di chat ini — balas \`1\` lagi untuk memprosesnya.` : ''));
-        } catch (e) {
-          hapusSesiObj(sesi);
-          console.error('[ASTICKER] gagal (video jadi audio sticker):', e?.stack || e?.message || e);
-          await react(mess.reactError).catch(() => {});
-          await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
-        }
-        return true;
-      }
-
-      if (teks === '0' || /^(no|tidak|nggak|gak)$/.test(teks)) {
-        try {
-          const gambar = sesi.image || await ambilGambar();
-          setSesi(ctx, { stage: 'audio', image: gambar }, sesi.kunci);
-          await reply('Oke, kirim *audio/voice note* custom yang mau dipakai.');
-        } catch (e) {
-          hapusSesiObj(sesi);
-          console.error('[ASTICKER] gagal ambil frame video:', e?.stack || e?.message || e);
-          await reply(`❌ Gagal mengambil frame video: ${rapikanError(e)}`);
-        }
-        return true;
-      }
-
-      await reply('Balas `1` (video jadi audio sticker) atau `0` (audio custom).');
-      return true;
-    }
-
-    // stage 'audio' / 'image': tunggu media yang kurang
-    const sumber = await kumpulkanSumber(ctx);
-    if (!sumber.length) return false; // biarkan chat biasa jalan
-
-    const gambar = sesi.image || sumber.find((s) => s.kind === 'image');
-    const audio  = sesi.audio || sumber.find((s) => s.kind === 'audio');
-    const video  = sesi.video || sumber.find((s) => s.kind === 'video');
-
-    if (gambar && (audio || video)) {
-      await react(mess.reactLoading).catch(() => {});
-      try {
-        const res = await kirimAudioSticker(ctx, gambar, audio || video);
-        hapusSesiObj(sesi);
-        await react(mess.reactSuccess).catch(() => {});
-        await reply(kabarSukses(res));
-      } catch (e) {
-        hapusSesiObj(sesi);
-        console.error('[ASTICKER] gagal (media susulan):', e?.stack || e?.message || e);
-        await react(mess.reactError).catch(() => {});
-        await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
-      }
-      return true;
-    }
-
-    if (video && !gambar) {
-      setSesi(ctx, { stage: 'pilihVideo', video }, sesi.kunci);
-      await reply('🎬 Sumbernya video. Ketik `1` (video jadi audio sticker) atau `0` (audio custom).');
-      return true;
-    }
-
-    if (gambar) {
-      setSesi(ctx, { stage: 'audio', image: gambar }, sesi.kunci);
-      await reply('🖼️ Gambar/stiker tersimpan. Sekarang kirim *audio/voice note*-nya.');
-      return true;
-    }
-
-    setSesi(ctx, { stage: 'image', ...(audio ? { audio } : {}), ...(video ? { video } : {}) }, sesi.kunci);
-    await reply('🔊 Audio tersimpan. Sekarang kirim *gambar/stiker*-nya.');
-    return true;
-  }
+  // Isinya ada di prosesBalasanSesi() — jalur yang sama juga dipakai engine LEBIH
+  // DULU (engine/antrianPrompt.js), jadi balasan `1`/`0` menang atas plugin yang
+  // menelan teks non-perintah (mis. `00-game.js` saat ada game aktif). Ini jalur
+  // cadangan kalau entri antrian sudah hilang/kedaluwarsa.
+  if (!isCmd && sesi) return prosesBalasanSesi(ctx);
 
   if (!perintahUtama) return false;
 

@@ -15,6 +15,7 @@ const { jadwalkanNotifMati } = require('./watchdog');
 const { activeBots, activeGroupsPerBot, activeChannelsPerBot } = require('../controllers/botController');
 const { isPendingSewa } = require('./pendingSewa');
 const sekaliLihat = require('./sekaliLihat');
+const antrianPrompt = require('./antrianPrompt');
 
 // Track grup yang sudah dikirimi pesan "tidak terdaftar" agar tidak spam
 // Key: `${botId}:${groupJid}` — hapus otomatis setelah 10 menit
@@ -1003,6 +1004,11 @@ async function startWhatsAppBot(botData, usePairingCode = false) {
     const { cooldownGuard } = require('./cooldown');
     const cd = await cooldownGuard(ctx);
     if (!cd.ok) { cmdHandled = true; }   // pesan sudah dibalas (atau sengaja diam) di dalam cooldownGuard
+    // Pertanyaan plugin yang sedang menunggu jawaban dicek SEBELUM plugin lain:
+    // plugin diproses urut nama file, jadi `00-game.js` (yang menelan semua teks
+    // non-perintah saat ada game aktif) bisa mencuri balasan `1`/`0` milik plugin
+    // lain — lihat engine/antrianPrompt.js.
+    else if (await antrianPrompt.jalankan(ctx)) { cmdHandled = true; }
     else for (const handler of plugins) {
       try {
         const handled = await handler(ctx);
