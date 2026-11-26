@@ -24,6 +24,10 @@ const notifiedUnregistered = new Map();
 // Bot yang sedang di-stop / clear-session — auto-reconnect harus skip
 const stoppingBots = new Set();
 
+// Bot yang sedang reconnect — cegah close event ganda memicu dua start paralel
+// (dua sesi WA untuk nomor sama -> stream_error_replaced / 503 flapping).
+const reconnectingBots = new Set();
+
 // Bot yang lagi restart: stop normal nge-nol-in is_running di DB, padahal niatnya
 // nyalain lagi — auto-start pas boot server bakal ninggalin bot ini.
 const restartingBots = new Set();
@@ -329,6 +333,11 @@ async function startWhatsAppBot(botData, usePairingCode = false) {
   if (!createSqliteStore) throw new Error('@zapo-js/store-sqlite tidak terinstall');
 
   const botId  = botData.id;
+  // Tutup instansi lama yang masih nyangkut (reconnect dobel) supaya WA
+  // tidak saling tendang stream_error_replaced / 503.
+  if (activeBots.has(botId)) {
+    try { await stopWhatsAppBot(botId); } catch { /* ignore */ }
+  }
   const botDir = path.join(SESSIONS_DIR, `bot_${botId}`);
   fs.mkdirSync(botDir, { recursive: true });
 
@@ -514,20 +523,32 @@ async function startWhatsAppBot(botData, usePairingCode = false) {
         return;
       }
 
+      // Cegah close event ganda (dua socket) memicu dua reconnect paralel.
+      if (reconnectingBots.has(botId)) {
+        console.log(`[Bot ${botId}] ⏳ Reconnect sudah dijadwalkan — skip`);
+        return;
+      }
+
       if (isLogout) {
         console.log(`[Bot ${botId}] 🚪 Logout — hapus sesi untuk scan ulang`);
         await logBot(botId, 'warn', 'Sesi logout. Hapus sesi untuk scan ulang.');
       } else {
-        console.log(`[Bot ${botId}] 🔄 Reconnect dalam 5 detik...`);
-        await logBot(botId, 'info', 'Reconnect dalam 5 detik...');
+        console.log(`[Bot ${botId}] 🔄 Reconnect dalam 8 detik...`);
+        await logBot(botId, 'info', 'Reconnect dalam 8 detik...');
+        reconnectingBots.add(botId);
         setTimeout(async () => {
           try {
+            // Tunggu socket lama benar-benar tutup di sisi OS sebelum start baru,
+            // supaya WA tidak lihat dua sesi paralel (stream_error_replaced).
+            await new Promise(r => setTimeout(r, 3000));
             const [rows] = await pool.execute('SELECT * FROM bots WHERE id = ?', [botId]);
             const freshBotData = rows[0] || botData;
             await startWhatsAppBot(freshBotData, false);
           } catch (e) {
             console.error(`[Bot ${botId}] 💥 Reconnect error: ${e.message}`);
             await logBot(botId, 'error', `Reconnect error: ${e.message}`);
+          } finally {
+            reconnectingBots.delete(botId);
           }
         }, 5000);
       }
