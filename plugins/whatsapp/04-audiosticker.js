@@ -532,6 +532,18 @@ async function bikinAudioSticker(ctx, sumberGambar, sumberAudio) {
   const sekarang = Math.floor(Date.now() / 1000);
   const domain = (key) => ({ mediaKeyDomain: 1, e2EeMediaKey: key });
 
+  // Stiker dikirim sebagai BALASAN ke pesan permintaannya (kutipan asli, bukan
+  // karangan) supaya di grup jelas siapa yang minta — permintaan pemilik 2026-11-26.
+  const asal = ctx.msg?.key;
+  const kutipan = asal?.id
+    ? {
+      stanzaId: asal.id,
+      participant: ctx.sender,
+      remoteJid: ctx.jid,
+      ...(ctx.msg?.message ? { quotedMessage: ctx.msg.message } : {}),
+    }
+    : null;
+
   const audioMessage = {
     ...a,
     mimetype: a.mimetype || opus.mimetype,
@@ -555,6 +567,7 @@ async function bikinAudioSticker(ctx, sumberGambar, sumberAudio) {
     contextInfo: {
       mediaDomainInfo: domain(s.mediaKey),
       experienceIds: [13001],
+      ...(kutipan || {}),
     },
   };
 
@@ -593,17 +606,58 @@ async function bikinAudioSticker(ctx, sumberGambar, sumberAudio) {
 const caraPakai = (p) =>
   `*🔊 Audio Sticker*\n\n` +
   `Gabungkan *gambar/stiker* dengan *audio/voice note* jadi satu audio sticker.\n\n` +
-  `> Reply audio/voice note, kirim gambar/stiker + caption \`${p}sa\`\n` +
-  `> Reply gambar/stiker, kirim audio/voice note + caption \`${p}sa\`\n` +
-  `> Kirim video + caption \`${p}sa\`, lalu pilih:\n` +
-  `> \`1\` = video langsung jadi audio sticker (stiker bergerak + audio video)\n` +
-  `> \`0\` = stiker bergerak dari video + audio custom\n\n` +
+  `> Kirim *video* + caption \`${p}sa\` — langsung jadi stiker bergerak + suara videonya\n` +
+  `> Mau sound sendiri? Ketik \`${p}sa 0\`, lalu kirim *gambar/stiker/video* + *audio/voice note*\n` +
+  `> Reply audio/voice note, kirim gambar/stiker + caption \`${p}sa\`\n\n` +
   `Bisa juga lewat \`${p}s -audio\` atau \`${p}saudio\`.`;
 
 const kabarSukses = (res) =>
   `✅ *Audio sticker terkirim*\n` +
   `🔊 ${(res.size / 1024).toFixed(0)} KB` +
   (res.seconds ? ` · ⏱ ${res.seconds} detik` : '');
+
+// ─── Alur kirim ──────────────────────────────────────────────────────────────
+/**
+ * Video tanpa jalur audio + tidak ada audio custom: ffmpeg pasti gagal dengan
+ * "Output file does not contain any stream". Jadi jangan diteruskan ke error
+ * teknis — tahan sesinya, minta audio custom (visualnya tetap video itu).
+ * Balikin true kalau sesi ditahan.
+ */
+async function tahanKalauBisu(ctx, video, audio) {
+  if (audio || !video) return false;
+  if (await punyaJalurAudio(video.buffer)) return false;
+  setSesi(ctx, {
+    stage: 'audio',
+    image: { buffer: video.buffer, kind: 'video', type: 'videoMessage', mime: video.mime || 'video/mp4' },
+  });
+  await ctx.reply('🎬 Videonya tidak ada suaranya. Kirim *audio/voice note* yang mau dipakai '
+    + '(visualnya tetap dari video ini), atau kirim video lain yang ada suaranya.');
+  return true;
+}
+
+/**
+ * Kirim stiker + reaksi + laporan. Dipakai semua jalur (video langsung, media
+ * susulan, sound custom) supaya perlakuannya sama.
+ */
+async function prosesKirim(ctx, gambar, audio, catatan = '') {
+  const { reply, react } = ctx;
+  const sesi = getSesi(ctx) || null;
+  await react(mess.reactLoading).catch(() => {});
+  try {
+    const res = await kirimAudioSticker(ctx, gambar, audio);
+    hapusSesi(ctx);
+    await react(mess.reactSuccess).catch(() => {});
+    const sisa = sesi ? sesiLainDiChat(ctx, sesi) : 0;
+    await reply(`${kabarSukses(res)}${catatan}`
+      + (sisa ? `\n\ni️ Masih ada *${sisa}* permintaan lain menunggu di chat ini — kirim lagi pakai \`${ctx.botData?.prefix ?? '.'}sa\`.` : ''));
+  } catch (e) {
+    hapusSesi(ctx);
+    console.error('[ASTICKER] gagal:', e?.stack || e?.message || e);
+    await react(mess.reactError).catch(() => {});
+    await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
+  }
+  return true;
+}
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
 /**
@@ -628,103 +682,28 @@ async function prosesBalasanSesi(ctx) {
 
   const teks = String(ctx.body || '').trim().toLowerCase();
 
-  if (sesi.stage === 'pilihVideo') {
-    // Visual = VIDEONYA (nanti jadi webp animasi di keWebp), bukan satu frame.
-    const ambilGambar = async () => ({
-      buffer: sesi.video.buffer,
-      kind: 'video',
-      type: 'videoMessage',
-      mime: sesi.video.mime || 'video/mp4',
-    });
-
-    if (teks === '1' || /^(ya|yes|iy(a|e))$/.test(teks)) {
-      const gambarAwal = sesi.image || await ambilGambar();
-
-      // Video TANPA jalur audio: ffmpeg nggak akan menghasilkan audio apa pun
-      // ("Output file does not contain any stream"), jadi jangan diteruskan ke
-      // error teknis — sesi lanjut minta audio custom, visualnya tetap video ini.
-      if (gambarAwal.kind === 'video' && !(await punyaJalurAudio(gambarAwal.buffer))) {
-        setSesi(ctx, { stage: 'audio', image: gambarAwal }, sesi.kunci);
-        await reply('🎬 Videonya tidak ada suaranya, jadi belum bisa dibikin stiker audio dari video itu.\n\n'
-          + 'Kirim *audio/voice note* yang mau dipakai (visualnya tetap dari video ini), '
-          + 'atau kirim video lain yang ada suaranya.');
-        return true;
-      }
-
-      // Tanda "sedang diproses" — dulu cuma ada ✅ di akhir, jadi user tidak tahu
-      // jawabannya diterima atau ditolak sampai stikernya muncul.
-      await react(mess.reactLoading).catch(() => {});
-      try {
-        const gambar = gambarAwal;
-        const res = await kirimAudioSticker(ctx, gambar, sesi.video);
-        hapusSesiObj(sesi);
-        await react(mess.reactSuccess).catch(() => {});
-        const sisa = sesiLainDiChat(ctx, sesi);
-        await reply(`${kabarSukses(res)}\n_Video jadi stiker audio._`
-          + (sisa ? `\n\ni️ Masih ada *${sisa}* permintaan lain menunggu di chat ini — balas \`1\` lagi untuk memprosesnya.` : ''));
-      } catch (e) {
-        hapusSesiObj(sesi);
-        console.error('[ASTICKER] gagal (video jadi audio sticker):', e?.stack || e?.message || e);
-        await react(mess.reactError).catch(() => {});
-        await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
-      }
-      return true;
-    }
-
-    if (teks === '0' || /^(no|tidak|nggak|gak)$/.test(teks)) {
-      try {
-        const gambar = sesi.image || await ambilGambar();
-        setSesi(ctx, { stage: 'audio', image: gambar }, sesi.kunci);
-        await reply('Oke, kirim *audio/voice note* custom yang mau dipakai.');
-      } catch (e) {
-        hapusSesiObj(sesi);
-        console.error('[ASTICKER] gagal ambil frame video:', e?.stack || e?.message || e);
-        await reply(`❌ Gagal mengambil frame video: ${rapikanError(e)}`);
-      }
-      return true;
-    }
-
-    await reply('Balas `1` (video jadi audio sticker) atau `0` (audio custom).');
-    return true;
-  }
-
   // stage 'audio' / 'image': tunggu media yang kurang
   const sumber = await kumpulkanSumber(ctx);
   if (!sumber.length) return false; // biarkan chat biasa jalan
 
-  const gambar = sesi.image || sumber.find((s) => s.kind === 'image');
-  const audio  = sesi.audio || sumber.find((s) => s.kind === 'audio');
   const video  = sesi.video || sumber.find((s) => s.kind === 'video');
+  const audio  = sesi.audio || sumber.find((s) => s.kind === 'audio');
+  // Video juga boleh jadi visual (nanti jadi webp animasi), sama seperti gambar.
+  const gambar = sesi.image || sumber.find((s) => s.kind === 'image') || video;
 
   if (gambar && (audio || video)) {
-    await react(mess.reactLoading).catch(() => {});
-    try {
-      const res = await kirimAudioSticker(ctx, gambar, audio || video);
-      hapusSesiObj(sesi);
-      await react(mess.reactSuccess).catch(() => {});
-      await reply(kabarSukses(res));
-    } catch (e) {
-      hapusSesiObj(sesi);
-      console.error('[ASTICKER] gagal (media susulan):', e?.stack || e?.message || e);
-      await react(mess.reactError).catch(() => {});
-      await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
-    }
-    return true;
-  }
-
-  if (video && !gambar) {
-    setSesi(ctx, { stage: 'pilihVideo', video }, sesi.kunci);
-    await reply('🎬 Sumbernya video. Ketik `1` (video jadi audio sticker) atau `0` (audio custom).');
-    return true;
+    // Video bisu + tanpa audio custom: tahan sesi, minta audionya.
+    if (await tahanKalauBisu(ctx, video, audio)) return true;
+    return prosesKirim(ctx, gambar, audio || video);
   }
 
   if (gambar) {
     setSesi(ctx, { stage: 'audio', image: gambar }, sesi.kunci);
-    await reply('🖼️ Gambar/stiker tersimpan. Sekarang kirim *audio/voice note*-nya.');
+    await reply('🖼️ Visualnya sudah masuk. Sekarang kirim *audio/voice note*-nya.');
     return true;
   }
 
-  setSesi(ctx, { stage: 'image', ...(audio ? { audio } : {}), ...(video ? { video } : {}) }, sesi.kunci);
+  setSesi(ctx, { stage: 'image', ...(audio ? { audio } : {}) }, sesi.kunci);
   await reply('🔊 Audio tersimpan. Sekarang kirim *gambar/stiker*-nya.');
   return true;
 }
@@ -756,47 +735,43 @@ module.exports = async function audioStickerHandler(ctx) {
 
   // ── Command utama ─────────────────────────────────────────────────────────
   const sumber = await kumpulkanSumber(ctx);
-  if (!sumber.length) {
-    hapusSesi(ctx);
-    await reply(caraPakai(p));
-    return true;
-  }
 
   const gambar = sumber.find((s) => s.kind === 'image');
   const audio  = sumber.find((s) => s.kind === 'audio');
   const video  = sumber.find((s) => s.kind === 'video');
 
-  if (gambar && audio) {
-    await react(mess.reactLoading).catch(() => {});
-    try {
-      const res = await kirimAudioSticker(ctx, gambar, audio);
-      hapusSesi(ctx);
-      await react(mess.reactSuccess).catch(() => {});
-      await reply(kabarSukses(res));
-    } catch (e) {
-      hapusSesi(ctx);
-      console.error('[ASTICKER] gagal kirim:', e?.stack || e?.message || e);
-      await react(mess.reactError).catch(() => {});
-      await reply(`❌ Gagal membuat audio sticker: ${rapikanError(e)}`);
-    }
+  // `.sa 0` = mau pakai sound sendiri: bot tunggu audio/voice note-nya.
+  const mauCustom = new Set(['0', 'audio', 'suara', 'sound'])
+    .has(String(args?.[0] || '').toLowerCase());
+
+  if (!sumber.length) {
+    hapusSesi(ctx);
+    if (!mauCustom) { await reply(caraPakai(p)); return true; }
+    setSesi(ctx, { stage: 'image', custom: true });
+    await reply('🎛️ Mode *sound custom*.\n\nKirim *gambar/stiker/video* + *audio/voice note* '
+      + 'yang mau dipakai — urutan bebas, bot tunggu sampai keduanya ada.');
     return true;
   }
 
-  if (gambar && video) {
-    setSesi(ctx, { stage: 'pilihVideo', image: gambar, video });
-    await reply('🎬 Sumbernya video. Ketik `1` (pakai audio video) atau `0` (pakai audio custom).');
+  // Sudah lengkap (gambar/stiker + audio) -> langsung kirim.
+  if (gambar && audio) return prosesKirim(ctx, gambar, audio);
+
+  // `.sa 0`: visual apa saja, audionya nanti dari member.
+  if (mauCustom && (gambar || video)) {
+    setSesi(ctx, { stage: 'audio', image: gambar || video });
+    await reply('🎛️ Oke, kirim *audio/voice note* yang mau dipakai untuk stiker ini.');
     return true;
   }
 
+  // Video (default): langsung jadi pakai suara videonya sendiri — tanpa tanya 1/0.
   if (video) {
-    setSesi(ctx, { stage: 'pilihVideo', video });
-    await reply('🎬 Sumbernya video. Ketik `1` (pakai audio video) atau `0` (pakai audio custom).');
-    return true;
+    if (await tahanKalauBisu(ctx, video, audio)) return true;
+    return prosesKirim(ctx, video, audio || video, '\n_Video jadi stiker audio._');
   }
 
   if (gambar) {
     setSesi(ctx, { stage: 'audio', image: gambar });
-    await reply('🖼️ Gambar/stiker tersimpan. Sekarang kirim *audio/voice note*-nya.');
+    await reply('🖼️ Gambar/stiker diterima. Sekarang kirim *audio/voice note*-nya.');
     return true;
   }
 
