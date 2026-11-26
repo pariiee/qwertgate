@@ -228,6 +228,16 @@ async function kumpulkanSumber(ctx) {
 }
 
 // ─── ffmpeg ──────────────────────────────────────────────────────────────────
+// Ambil bagian stderr yang berguna buat pesan error. `slice(-200)` mentah bikin
+// pesan nyasar: di `-v info` baris terakhir bisa cuma progres ("size=… time=…"),
+// jadi errornya malah ketutup (pernah kejadian: "ffmpeg gagal: d : [0][0][0][0]").
+function pesanFfmpeg(err) {
+  const baris = String(err || '').split('\n').map((b) => b.trim()).filter(Boolean);
+  const penting = baris.filter((b) => /error|invalid|unable|no such|does not contain|failed|denied|not found/i.test(b));
+  const pilih = (penting.length ? penting : baris).slice(-3);
+  return pilih.join(' | ').slice(0, 300) || 'tanpa keterangan';
+}
+
 function ffmpegPipe(args, input) {
   return new Promise((resolve, reject) => {
     const p = spawn('ffmpeg', args);
@@ -238,9 +248,27 @@ function ffmpegPipe(args, input) {
     p.on('error', reject);
     p.stdin.on('error', () => {});
     p.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`ffmpeg gagal: ${err.slice(-200)}`));
+      if (code !== 0) return reject(new Error(`ffmpeg gagal: ${pesanFfmpeg(err)}`));
       resolve({ buf: Buffer.concat(out), err });
     });
+    p.stdin.end(input);
+  });
+}
+
+// Ada jalur audio di dalam sumbernya? Dipakai sebelum konversi: video bisu bikin
+// ffmpeg mati dengan "Output file does not contain any stream".
+function punyaJalurAudio(input) {
+  return new Promise((resolve) => {
+    let p;
+    try {
+      p = spawn('ffprobe', ['-v', 'error', '-select_streams', 'a',
+        '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', 'pipe:0']);
+    } catch { resolve(true); return; }
+    let out = '';
+    p.stdout.on('data', (d) => { out += d; });
+    p.on('error', () => resolve(true));     // ffprobe hilang? jangan blokir user
+    p.on('close', () => resolve(/audio/i.test(out)));
+    p.stdin.on('error', () => {});
     p.stdin.end(input);
   });
 }
@@ -252,6 +280,11 @@ const isWebp = (b) =>
 async function keOpus(input) {
   if (input.subarray(0, 4).toString('ascii') === 'OggS') {
     return { buf: input, mimetype: 'audio/ogg; codecs=opus', seconds: null };
+  }
+  // Video bisu (atau file tanpa jalur audio) bikin ffmpeg gagal dengan pesan
+  // teknis "Output file does not contain any stream" — kasih pesan yang jelas.
+  if (!(await punyaJalurAudio(input))) {
+    throw new Error('sumbernya tidak punya jalur audio (videonya bisu / tidak ada suara)');
   }
   const { buf, err } = await ffmpegPipe([
     '-v', 'info', '-i', 'pipe:0', '-vn', '-map_metadata', '-1',
@@ -527,11 +560,24 @@ async function prosesBalasanSesi(ctx) {
     });
 
     if (teks === '1' || /^(ya|yes|iy(a|e))$/.test(teks)) {
+      const gambarAwal = sesi.image || await ambilGambar();
+
+      // Video TANPA jalur audio: ffmpeg nggak akan menghasilkan audio apa pun
+      // ("Output file does not contain any stream"), jadi jangan diteruskan ke
+      // error teknis — sesi lanjut minta audio custom, visualnya tetap video ini.
+      if (gambarAwal.kind === 'video' && !(await punyaJalurAudio(gambarAwal.buffer))) {
+        setSesi(ctx, { stage: 'audio', image: gambarAwal }, sesi.kunci);
+        await reply('🎬 Videonya tidak ada suaranya, jadi belum bisa dibikin stiker audio dari video itu.\n\n'
+          + 'Kirim *audio/voice note* yang mau dipakai (visualnya tetap dari video ini), '
+          + 'atau kirim video lain yang ada suaranya.');
+        return true;
+      }
+
       // Tanda "sedang diproses" — dulu cuma ada ✅ di akhir, jadi user tidak tahu
       // jawabannya diterima atau ditolak sampai stikernya muncul.
       await react(mess.reactLoading).catch(() => {});
       try {
-        const gambar = sesi.image || await ambilGambar();
+        const gambar = gambarAwal;
         const res = await kirimAudioSticker(ctx, gambar, sesi.video);
         hapusSesiObj(sesi);
         await react(mess.reactSuccess).catch(() => {});
