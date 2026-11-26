@@ -284,14 +284,31 @@ function buildContext(client, event, botData) {
     activeGroups: activeGroupsPerBot.get(botData.id) || new Map(),
     pushName: pushName || 'User',
     // Helper: reply with text.
-    // Dulu ini dibungkus `interactiveMessage` + nativeFlow `inapp_signup` + kuotasi
-    // palsu `groupInviteMessage` (caption `www.yapari.web.id`) supaya balasan dapat
-    // kartu pratinjau / badge. Hasilnya kartu aneh ("Request successful" + "View
-    // details" + nama grup) nempel di SETIAP balasan WA, dan itu dilaporkan sebagai
-    // bug oleh user (2026-11-26) — jadi balasan sekarang teks biasa.
+    // Sejarah singkat: dulu balasan dibungkus `interactiveMessage` + nativeFlow
+    // `inapp_signup` + kuotasi palsu `groupInviteMessage` (caption
+    // `www.yapari.web.id`) untuk dapat kartu pratinjau/badge. Kuotasi invite itu
+    // yang bikin kartu aneh ("Group · <nama grup> / Request successful / View
+    // details") nempel di setiap balasan, jadi dibuang (commit b62eaf4).
+    // Sekarang URL situs dikembalikan sebagai kuotasi TEKS biasa — tanpa kartu
+    // undangan. Kalau ini masih terasa aneh, hapus blok `extendedTextMessage`
+    // di bawah supaya balasan jadi teks polos.
     reply: async (text) => {
       const full = `${text}\n\n${botData.footer_text || ''}`.trim();
-      return client.message.send(jid, full);
+      try {
+        return await client.message.send(jid, {
+          extendedTextMessage: {
+            text: full,
+            contextInfo: {
+              participant: '0@s.whatsapp.net',
+              quotedMessage: { conversation: 'www.yapari.web.id' },
+              remoteJid: jid,
+            },
+          },
+        });
+      } catch {
+        // Fallback: teks biasa kalau jalur kuotasi ditolak
+        return client.message.send(jid, full);
+      }
     },
     // Helper: react with emoji
     react: (emoji) =>
