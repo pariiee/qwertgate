@@ -283,35 +283,15 @@ function buildContext(client, event, botData) {
     fitur: botData?.fitur,
     activeGroups: activeGroupsPerBot.get(botData.id) || new Map(),
     pushName: pushName || 'User',
-    // Helper: reply with text — pakai interactiveMessage supaya ada verified badge
+    // Helper: reply with text.
+    // Dulu ini dibungkus `interactiveMessage` + nativeFlow `inapp_signup` + kuotasi
+    // palsu `groupInviteMessage` (caption `www.yapari.web.id`) supaya balasan dapat
+    // kartu pratinjau / badge. Hasilnya kartu aneh ("Request successful" + "View
+    // details" + nama grup) nempel di SETIAP balasan WA, dan itu dilaporkan sebagai
+    // bug oleh user (2026-11-26) — jadi balasan sekarang teks biasa.
     reply: async (text) => {
       const full = `${text}\n\n${botData.footer_text || ''}`.trim();
-      try {
-        return await client.message.send(jid, {
-          interactiveMessage: {
-            body:   { text: full },
-            footer: { text: '' },
-            nativeFlowMessage: {
-              buttons: [
-                { name: 'inapp_signup', buttonParamsJson: '{}' },
-              ],
-              messageParamsJson: '{}',
-            },
-            // `quotedMessage` sengaja TIDAK dipakai lagi. Dulu di sini ditempel
-            // `groupInviteMessage.caption = 'www.yapari.web.id'` supaya WhatsApp
-            // menampilkan kartu pratinjau. Ternyata kartunya nempel di SETIAP
-            // balasan WA dan isinya aneh ("WhatsApp · Request successful · View
-            // details"), jadi dicopot (laporan 2026-11-26).
-            contextInfo: {
-              participant: '0@s.whatsapp.net',
-              remoteJid: jid,
-            },
-          },
-        });
-      } catch {
-        // Fallback ke text biasa kalau interactive gagal
-        return client.message.send(jid, full);
-      }
+      return client.message.send(jid, full);
     },
     // Helper: react with emoji
     react: (emoji) =>
