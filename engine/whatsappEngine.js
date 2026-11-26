@@ -297,13 +297,13 @@ function buildContext(client, event, botData) {
               ],
               messageParamsJson: '{}',
             },
+            // `quotedMessage` sengaja TIDAK dipakai lagi. Dulu di sini ditempel
+            // `groupInviteMessage.caption = 'www.yapari.web.id'` supaya WhatsApp
+            // menampilkan kartu pratinjau. Ternyata kartunya nempel di SETIAP
+            // balasan WA dan isinya aneh ("WhatsApp · Request successful · View
+            // details"), jadi dicopot (laporan 2026-11-26).
             contextInfo: {
               participant: '0@s.whatsapp.net',
-              quotedMessage: {
-                groupInviteMessage: {
-                  caption: 'www.yapari.web.id',
-                },
-              },
               remoteJid: jid,
             },
           },
