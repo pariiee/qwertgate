@@ -728,7 +728,7 @@ module.exports = async function toolsHandler(ctx) {
           type: 'sticker',
           media: stickerBuffer,
           mimetype: 'image/webp',
-        });
+        }, { quoted: ctx.msg });
         await react(mess.reactSuccess);
       } catch (e) {
         await react(mess.reactError);
@@ -767,7 +767,7 @@ ${rapikanError(e)}`);
           type: 'sticker',
           media: stickerBuffer,
           mimetype: 'image/webp',
-        });
+        }, { quoted: ctx.msg });
         await react(mess.reactSuccess);
       } catch (e) {
         await react(mess.reactError);
@@ -810,7 +810,7 @@ ${rapikanError(e)}`);
           type: 'sticker',
           media: stickerBuffer,
           mimetype: 'image/webp',
-        });
+        }, { quoted: ctx.msg });
         await react(mess.reactSuccess);
       } catch (e) {
         await react(mess.reactError);
@@ -4008,7 +4008,7 @@ ${rapikanError(e)}`);
 
         const finalBuf = await addStickerExif(webpBuffer, mess.packname, mess.author);
         await react(mess.reactSuccess);
-        await client.message.send(jid, { type: 'sticker', media: finalBuf, mimetype: 'image/webp' });
+        await client.message.send(jid, { type: 'sticker', media: finalBuf, mimetype: 'image/webp' }, { quoted: ctx.msg });
       } catch (e) {
         await react(mess.reactError);
         await reply(`❌ Gagal: ${rapikanError(e)}`);
