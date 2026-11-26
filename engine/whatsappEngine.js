@@ -289,26 +289,15 @@ function buildContext(client, event, botData) {
     // `www.yapari.web.id`) untuk dapat kartu pratinjau/badge. Kuotasi invite itu
     // yang bikin kartu aneh ("Group · <nama grup> / Request successful / View
     // details") nempel di setiap balasan, jadi dibuang (commit b62eaf4).
-    // Sekarang URL situs dikembalikan sebagai kuotasi TEKS biasa — tanpa kartu
-    // undangan. Kalau ini masih terasa aneh, hapus blok `extendedTextMessage`
-    // di bawah supaya balasan jadi teks polos.
+    // Urutan percobaan: kuotasi teks (d150b26) -> sekarang (opsi 2, permintaan
+    // user 2026-11-26): URL situs cukup ditaruh di BADAN pesan, biar preview
+    // link-nya dibuat WhatsApp/zapo sendiri seperti pesan biasa.
     reply: async (text) => {
-      const full = `${text}\n\n${botData.footer_text || ''}`.trim();
-      try {
-        return await client.message.send(jid, {
-          extendedTextMessage: {
-            text: full,
-            contextInfo: {
-              participant: '0@s.whatsapp.net',
-              quotedMessage: { conversation: 'www.yapari.web.id' },
-              remoteJid: jid,
-            },
-          },
-        });
-      } catch {
-        // Fallback: teks biasa kalau jalur kuotasi ditolak
-        return client.message.send(jid, full);
-      }
+      const full = [text, botData.footer_text, 'www.yapari.web.id']
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+      return client.message.send(jid, full);
     },
     // Helper: react with emoji
     react: (emoji) =>
