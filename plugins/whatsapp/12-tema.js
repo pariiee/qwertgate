@@ -164,6 +164,7 @@ async function jadikanJpeg(buf) {
 function payloadWallpaper(media) {
   return Buffer.from(proto.Message.ChatThemeSetting.encode({
     settingTimestampMs: Date.now(),
+    wallpaper: 'customImage',
     customImage: {
       directPath: media.directPath,
       mediaKey: media.mediaKey,
