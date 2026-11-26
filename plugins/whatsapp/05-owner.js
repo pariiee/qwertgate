@@ -781,6 +781,8 @@ module.exports = async function ownerHandler(ctx) {
         const m = arg.match(waLinkRegex);
         if (m) linkArg = m[1]; // invite code
         else if (groupJidRegex.test(arg)) jidArg = arg; // group JID langsung
+        else if (/^\d{15,}$/.test(arg)) jidArg = arg + "@g.us"; // bare JID tanpa @g.us
+
         else if (!durStr) durStr = arg;
       }
 
