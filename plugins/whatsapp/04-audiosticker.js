@@ -75,8 +75,28 @@ const sessions = new Map();
 // ─── Sesi ────────────────────────────────────────────────────────────────────
 const kunciSesi = (ctx) => `${ctx.botData?.id ?? '?'}:${ctx.jid}:${ctx.sender}`;
 
+// Batas sesi aktif per (bot, chat) supaya di grup besar sesi setengah jadi
+// tidak menumpuk tanpa batas (memory + noise prompt).
+const MAKS_SESI_PER_CHAT = 10;
+
 function setSesi(ctx, data, kunciPaksa = null) {
   const key = kunciPaksa || kunciSesi(ctx);
+  const awalan = `${ctx.botData?.id ?? '?'}:${ctx.jid}:`;
+  const kandidat = [];
+  for (const [k, v] of sessions) {
+    if (k === key) continue;
+    if (!k.startsWith(awalan)) continue;
+    kandidat.push([k, v]);
+  }
+  if (kandidat.length >= MAKS_SESI_PER_CHAT) {
+    kandidat.sort((a, b) => (a[1].dibuatAt || 0) - (b[1].dibuatAt || 0));
+    const hapus = kandidat.length - (MAKS_SESI_PER_CHAT - 1);
+    for (let i = 0; i < hapus; i++) {
+      const [k, v] = kandidat[i];
+      if (v?.timer) clearTimeout(v.timer);
+      sessions.delete(k);
+    }
+  }
   const lama = sessions.get(key);
   if (lama?.timer) clearTimeout(lama.timer);
   const sesi = {
