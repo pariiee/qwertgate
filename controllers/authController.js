@@ -952,6 +952,8 @@ async function googleCallback(req, res) {
     if (rows.length > 0) {
       user = rows[0];
     } else {
+      if (process.env.ALLOW_REGISTER !== '1')
+        return res.redirect('/login?err=' + encodeURIComponent('Registrasi ditutup. Hubungi admin.'));
       let baseUser = (profile.name || email.split('@')[0])
         .replace(/[^a-zA-Z0-9_]/g, '')
         .slice(0, 30);
