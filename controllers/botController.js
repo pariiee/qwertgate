@@ -4,7 +4,7 @@ const path   = require('path');
 const fs     = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const { pool } = require('../config/database');
-const { ADMIN_ROLE, slotsOf, ownerMax, receiveLimit, aktif } = require('../config/plan');
+const { ADMIN_ROLE, SUBADMIN_ROLE, slotsOf, ownerMax, receiveLimit, aktif } = require('../config/plan');
 const { resolveBotId, pastikanSlug } = require('../config/botSlug');
 const pricingStore = require('../config/pricingStore');
 
