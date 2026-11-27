@@ -5898,7 +5898,7 @@ ${rapikanError(e)}`); }
         await react(mess.reactLoading);
         const axios = require('axios');
         const { data } = await axios.get(`${process.env.BASE_API}api/stalker/discord`, {
-          params: { userid }, headers: { 'X-API-Key': process.env.KEY_API }, timeout: 15000,
+          params: { id: userid }, headers: { 'X-API-Key': process.env.KEY_API }, timeout: 15000,
         });
         const d = data?.results;
         if (!d) throw new Error('User tidak ditemukan');
