@@ -76,18 +76,29 @@ const fVarint = (field, n) => Buffer.concat([tag(field, 0), varint(n)]);
  */
 const bungkusTema = (payload) => fBytes(12, Buffer.concat([fVarint(2, 34), fBytes(30, payload)]));
 
-/** Payload `ChatThemeSetting`: warna solid, atau reset ke bawaan. */
-const payloadTema = ({ hex, reset }) => {
+const ANIMATED_WALLPAPERS = new Set(['gradient', 'iridescent', 'aurora', 'lava-lamp', 'lavalamp']);
+
+/** Payload `ChatThemeSetting`: warna solid, theme id, wallpaper, animated, atau reset. */
+const payloadTema = (mode) => {
   const isi = { settingTimestampMs: Date.now() };
-  if (reset) {
+  if (mode.reset) {
     isi.clearTheme = true;
-  } else {
-    const argb = (0xff000000 | parseInt(hex, 16)) >>> 0;
+  } else if (mode.hex) {
+    const argb = (0xff000000 | parseInt(mode.hex, 16)) >>> 0;
+    isi.wallpaper = 'solidColor';
     isi.solidColor = {
       backgroundLightArgb: argb,
       backgroundDarkArgb: argb,
       isDoodleEnabled: true,
     };
+  } else if (mode.animated) {
+    isi.wallpaper = 'animatedWallpaper';
+    isi.animatedWallpaper = { animatedWallpaperId: mode.value, dimLevel: 0.2 };
+  } else if (mode.wallpaper) {
+    isi.wallpaper = 'stockImage';
+    isi.stockImage = { stockImageId: mode.value, dimLevel: 0 };
+  } else if (mode.themeId) {
+    isi.colorSchemeId = mode.value;
   }
   return Buffer.from(proto.Message.ChatThemeSetting.encode(isi).finish());
 };
@@ -192,6 +203,7 @@ const caraPakai = (p) =>
   + `• Warna cepat: \`${p}tema pink\`\n`
   + `  _(pink, biru, ungu, hitam, hijau, merah, kuning, oren, putih)_\n`
   + `• Warna kode hex: \`${p}tema #ff69b4\`\n`
+  + `• Tema ID: \`${p}tema tyrian-purple\` (atau wallpaper_bloom_001, aurora, dll)\n`
   + `• Balikin ke bawaan: \`${p}tema reset\`\n`
   + `• Wallpaper foto: \`${p}temafoto\` (kirim/reply foto) atau \`${p}temafoto <link gambar>\`\n\n`
   + '_Cuma admin grup (atau owner bot) yang bisa ganti._';
@@ -289,18 +301,28 @@ module.exports = async function (ctx) {
   const preset = WARNA_CEPAT[q.toLowerCase()];
   const hex = preset || (/^#?[0-9a-f]{6}$/i.test(q) ? q.replace('#', '').toLowerCase() : null);
   const reset = /^(reset|hapus|clear|bawaan|default)$/i.test(q);
+  const qLow = q.toLowerCase();
+  const animated = ANIMATED_WALLPAPERS.has(qLow) || ANIMATED_WALLPAPERS.has(qLow.replace('lavalamp', 'lava-lamp'));
+  const wallpaper = !hex && !reset && !animated && /^wallpaper[-_]/i.test(q);
+  const themeId = !hex && !reset && !animated && !wallpaper && q.length > 0;
 
-  if (!hex && !reset) {
+  if (!hex && !reset && !animated && !wallpaper && !themeId) {
     await reply(caraPakai(p));
     return true;
   }
 
-  const label = reset ? 'kembali ke tema bawaan' : `warna #${String(hex).toUpperCase()}`;
+  let mode;
+  let label;
+  if (reset) { mode = { reset: true }; label = 'kembali ke tema bawaan'; }
+  else if (hex) { mode = { hex }; label = `warna #${String(hex).toUpperCase()}`; }
+  else if (animated) { const v = qLow.replace('lavalamp', 'lava-lamp'); mode = { animated: true, value: v }; label = `animated ${v}`; }
+  else if (wallpaper) { mode = { wallpaper: true, value: q }; label = `wallpaper ${q}`; }
+  else { mode = { themeId: true, value: q }; label = `tema ${q}`; }
 
   await react(mess.reactLoading).catch(() => {});
 
   try {
-    const bytes = bungkusTema(payloadTema({ hex, reset }));
+    const bytes = bungkusTema(payloadTema(mode));
     const hasil = await client.message.kirimPesanGrupMentah(jid, bytes, { mediatype: 'chat_theme' });
 
     await react(mess.reactSuccess).catch(() => {});
