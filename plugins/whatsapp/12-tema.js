@@ -42,6 +42,17 @@ const WARNA_CEPAT = {
   putih: 'f5f6fa',
 };
 
+// Daftar tema siap pakai (nomor -> id). Dipakai `.tema list` dan `.tema <nomor>`.
+const TEMA_LIST = [
+  'default', 'whatsapp-green', 'pearl-indigo', 'tyrian-purple', 'sunset-orange',
+  'merino-teal', 'royal-blue', 'dark-cerulean', 'charcoal-green', 'persian-plum',
+  'dune-mono', 'default-blue', 'default-mono', 'sky-blue', 'brown', 'cream',
+  'emerald', 'lemon', 'lime', 'pink', 'red', 'sunrise-orange', 'warm-yellow',
+  'aurora', 'gradient', 'iridescent', 'lava-lamp',
+  'wallpaper_bloom_001', 'wallpaper_sunset_001', 'wallpaper_night_001',
+  'wallpaper_space_001', 'wallpaper_violet_001', 'wallpaper_lilac_001',
+];
+
 // Tipe proto ChatThemeSetting ada di bundel zapo (verified lewat encode).
 // Kalau hilang (versi lain), command ini bilang terus terang daripada kirim
 // payload kosong.
@@ -253,8 +264,26 @@ module.exports = async function (ctx) {
 
   const q = args.join(' ').trim();
 
+  // `.tema list` -> tampilkan daftar bernomor
+  if (/^list$/i.test(q)) {
+    const baris = TEMA_LIST.map((t, i) => `${i + 1}. ${t}`).join('\n');
+    await reply(`🎨 *Daftar Tema*\n\n${baris}\n\nGunakan: *${p}tema <nomor>* atau *${p}tema <nama>*`);
+    return true;
+  }
+
+  // `.tema <nomor>` -> pilih dari daftar
+  let qResolved = q;
+  if (/^\d+$/.test(q)) {
+    const idx = parseInt(q, 10) - 1;
+    if (idx < 0 || idx >= TEMA_LIST.length) {
+      await reply(`❌ Nomor tema tidak valid. Ketik *${p}tema list* untuk lihat daftar.`);
+      return true;
+    }
+    qResolved = TEMA_LIST[idx];
+  }
+
   // ── Wallpaper foto ────────────────────────────────────────────────────────
-  const urlFoto = /^https?:\/\/\S+$/i.test(q) ? q : null;
+  const urlFoto = /^https?:\/\/\S+$/i.test(qResolved) ? qResolved : null;
   const mauWallpaper = ['temafoto', 'temagambar', 'wallpaper'].includes(String(command || '').toLowerCase())
     || Boolean(urlFoto);
 
@@ -298,13 +327,13 @@ module.exports = async function (ctx) {
     return true;
   }
 
-  const preset = WARNA_CEPAT[q.toLowerCase()];
-  const hex = preset || (/^#?[0-9a-f]{6}$/i.test(q) ? q.replace('#', '').toLowerCase() : null);
-  const reset = /^(reset|hapus|clear|bawaan|default)$/i.test(q);
-  const qLow = q.toLowerCase();
+  const preset = WARNA_CEPAT[qResolved.toLowerCase()];
+  const hex = preset || (/^#?[0-9a-f]{6}$/i.test(qResolved) ? qResolved.replace('#', '').toLowerCase() : null);
+  const reset = /^(reset|hapus|clear|bawaan|default)$/i.test(qResolved);
+  const qLow = qResolved.toLowerCase();
   const animated = ANIMATED_WALLPAPERS.has(qLow) || ANIMATED_WALLPAPERS.has(qLow.replace('lavalamp', 'lava-lamp'));
-  const wallpaper = !hex && !reset && !animated && /^wallpaper[-_]/i.test(q);
-  const themeId = !hex && !reset && !animated && !wallpaper && q.length > 0;
+  const wallpaper = !hex && !reset && !animated && /^wallpaper[-_]/i.test(qResolved);
+  const themeId = !hex && !reset && !animated && !wallpaper && qResolved.length > 0;
 
   if (!hex && !reset && !animated && !wallpaper && !themeId) {
     await reply(caraPakai(p));
@@ -316,8 +345,8 @@ module.exports = async function (ctx) {
   if (reset) { mode = { reset: true }; label = 'kembali ke tema bawaan'; }
   else if (hex) { mode = { hex }; label = `warna #${String(hex).toUpperCase()}`; }
   else if (animated) { const v = qLow.replace('lavalamp', 'lava-lamp'); mode = { animated: true, value: v }; label = `animated ${v}`; }
-  else if (wallpaper) { mode = { wallpaper: true, value: q }; label = `wallpaper ${q}`; }
-  else { mode = { themeId: true, value: q }; label = `tema ${q}`; }
+  else if (wallpaper) { mode = { wallpaper: true, value: qResolved }; label = `wallpaper ${qResolved}`; }
+  else { mode = { themeId: true, value: qResolved }; label = `tema ${qResolved}`; }
 
   await react(mess.reactLoading).catch(() => {});
 
